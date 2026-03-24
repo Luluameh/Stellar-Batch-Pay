@@ -20,6 +20,7 @@ import {
 import { useFreighter } from "@/hooks/use-freighter";
 import { Copy, Wallet, Layers } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { AccountProfileCard } from "@/components/dashboard/settings/AccountProfileCard";
 
 export default function SettingsPage() {
   const { publicKey, connect, disconnect, isConnecting } = useFreighter();
@@ -54,9 +55,12 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-3xl font-bold text-white mb-2">Settings</h1>
         <p className="text-slate-400">
-          Manage your wallet and payment preferences
+          Manage your account settings and preferences
         </p>
       </div>
+
+      {/* Account Profile Section */}
+      <AccountProfileCard />
 
       {/* Wallet Connection Section */}
       <Card className="bg-slate-900/50 border-slate-800">
