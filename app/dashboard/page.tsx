@@ -5,6 +5,7 @@ import { RecentBatchesTable } from "@/components/dashboard/RecentBatchesTable";
 import { OverviewMetrics } from "@/components/dashboard/overview-metrics";
 import { PaymentVolumeChart } from "@/components/dashboard/PaymentVolumeChart";
 import { QuickActions } from "@/components/dashboard/QuickActions";
+import { DeveloperResources } from "@/components/dashboard/developer-resources";
 
 const stats = [
   {
@@ -71,6 +72,9 @@ export default function DashboardPage() {
 
       {/* Recent Batches Table Section */}
       <RecentBatchesTable />
+
+      {/* Developer Resources Section */}
+      <DeveloperResources />
     </div>
   );
 }
