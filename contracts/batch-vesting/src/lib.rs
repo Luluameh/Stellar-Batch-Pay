@@ -155,6 +155,16 @@ impl BatchVestingContract {
             panic!("Unlock time must be in the future");
         }
 
+        for i in 0..recipients.len() {
+            let current = recipients.get(i).unwrap();
+            for j in (i + 1)..recipients.len() {
+                let other = recipients.get(j).unwrap();
+                if current == other {
+                    panic!("Duplicate recipients not allowed");
+                }
+            }
+        }
+
         let mut total_amount: i128 = 0;
 
         for i in 0..recipients.len() {
@@ -204,7 +214,6 @@ impl BatchVestingContract {
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         Self::require_current_admin(&env, &admin);
         Self::set_pending_admin_internal(&env, &new_admin);
-
         env.events().publish(
             (Symbol::new(&env, "AdminTransferProposed"),),
             (admin, new_admin),
