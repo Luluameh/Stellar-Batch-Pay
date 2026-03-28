@@ -40,7 +40,10 @@ impl BatchVestingContract {
     }
 
     fn is_paused(env: &Env) -> bool {
-        env.storage().persistent().get(&DataKey::Paused).unwrap_or(false)
+        env.storage()
+            .persistent()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 
     fn panic_if_paused(env: &Env) {
@@ -148,8 +151,12 @@ impl BatchVestingContract {
             );
 
             env.events().publish(
-                (Symbol::new(&env, "VestingDeposited"),),
-                (sender.clone(), recipient, amount, unlock_time),
+                (
+                    Symbol::new(&env, "VestingDeposited"),
+                    sender.clone(),
+                    recipient.clone(),
+                ),
+                (amount, unlock_time),
             );
         }
 
@@ -175,20 +182,12 @@ impl BatchVestingContract {
         }
         env.storage().persistent().set(&DataKey::Paused, &paused);
 
-        env.events().publish(
-            (Symbol::new(&env, "PauseToggled"),),
-            (admin, paused),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "PauseToggled"),), (admin, paused));
     }
 
     /// Revoke unvested schedule by recipient/unlock time.
-    pub fn revoke(
-        env: Env,
-        caller: Address,
-        recipient: Address,
-        token: Address,
-        unlock_time: u64,
-    ) {
+    pub fn revoke(env: Env, caller: Address, recipient: Address, token: Address, unlock_time: u64) {
         Self::panic_if_paused(&env);
         caller.require_auth();
 
@@ -229,8 +228,12 @@ impl BatchVestingContract {
         token_client.transfer(&env.current_contract_address(), &sender, &revoked_amount);
 
         env.events().publish(
-            (Symbol::new(&env, "VestingRevoked"),),
-            (recipient, sender, revoked_amount, unlock_time),
+            (
+                Symbol::new(&env, "VestingRevoked"),
+                recipient.clone(),
+                sender.clone(),
+            ),
+            (revoked_amount, unlock_time),
         );
     }
 
@@ -286,8 +289,12 @@ impl BatchVestingContract {
             token_client.transfer(&env.current_contract_address(), &sender, &revoked_amount);
 
             env.events().publish(
-                (Symbol::new(&env, "VestingRevoked"),),
-                (recipient, sender, revoked_amount, unlock_time),
+                (
+                    Symbol::new(&env, "VestingRevoked"),
+                    recipient.clone(),
+                    sender.clone(),
+                ),
+                (revoked_amount, unlock_time),
             );
         }
     }
@@ -339,11 +346,15 @@ impl BatchVestingContract {
         }
 
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount_to_transfer);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &recipient,
+            &amount_to_transfer,
+        );
 
         env.events().publish(
-            (Symbol::new(&env, "VestingClaimed"),),
-            (recipient, amount_to_transfer),
+            (Symbol::new(&env, "VestingClaimed"), recipient.clone()),
+            amount_to_transfer,
         );
     }
 }
