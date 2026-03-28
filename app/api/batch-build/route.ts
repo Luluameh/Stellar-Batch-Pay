@@ -16,10 +16,11 @@ import {
     Operation,
     Horizon,
     Memo,
+    StrKey,
 } from "stellar-sdk";
 import { validatePaymentInstructions } from "@/lib/stellar";
 import { createBatches, parseAsset } from "@/lib/stellar/batcher";
-import { validatePaymentInstruction } from "@/lib/stellar/validator";
+import { validatePaymentInstruction, buildBalancesMap, validateBalances } from "@/lib/stellar/validator";
 import type { PaymentInstruction } from "@/lib/stellar/types";
 
 interface RequestBody {
@@ -44,9 +45,9 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        if (!/^G[A-Z2-7]{54,56}$/.test(publicKey)) {
+        if (!StrKey.isValidEd25519PublicKey(publicKey)) {
             return NextResponse.json(
-                { error: "Invalid Stellar public key format" },
+                { error: "Invalid Stellar public key checksum" },
                 { status: 400 },
             );
         }
@@ -68,7 +69,7 @@ export async function POST(request: NextRequest) {
         const validation = validatePaymentInstructions(payments);
         if (!validation.valid) {
             const errors = Array.from(validation.errors.entries())
-                .map(([idx, err]) => `Row ${idx}: ${err}`)
+                .map(([idx, err]) => `Row ${idx + 1}: ${err}`)
                 .slice(0, 5);
             return NextResponse.json(
                 { error: `Invalid payment instructions: ${errors.join("; ")}` },
@@ -85,7 +86,24 @@ export async function POST(request: NextRequest) {
         const server = new Horizon.Server(serverUrl);
 
         const sourceAccount = await server.loadAccount(publicKey);
-        const batches = createBatches(payments, MAX_OPS);
+
+        // Validate source account has sufficient balance for all assets
+        const balancesMap = buildBalancesMap(
+            sourceAccount.balances as { asset_type: string; asset_code?: string; asset_issuer?: string; balance: string }[],
+        );
+        const balanceCheck = validateBalances(payments, balancesMap);
+        if (!balanceCheck.all_sufficient) {
+            const insufficient = balanceCheck.checks
+                .filter((c) => !c.sufficient)
+                .map((c) => `${c.asset_key}: need ${c.required}, have ${c.available}`)
+                .join("; ");
+            return NextResponse.json(
+                { error: `Insufficient balance: ${insufficient}` },
+                { status: 400 },
+            );
+        }
+
+        const batches = createBatches(payments, MAX_OPS, { network });
         const networkPassphrase =
             network === "testnet" ? Networks.TESTNET : Networks.PUBLIC;
 

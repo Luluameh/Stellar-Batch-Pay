@@ -23,6 +23,19 @@ export interface PaymentInstruction {
   asset: string; // 'XLM' for native or 'CODE:ISSUER' for issued assets
 }
 
+export interface PaymentValidationRow {
+  rowNumber: number;
+  instruction: PaymentInstruction;
+  valid: boolean;
+  error?: string;
+}
+
+export interface ParsedPaymentFile {
+  rows: PaymentValidationRow[];
+  validPayments: PaymentInstruction[];
+  invalidCount: number;
+}
+
 export interface Asset {
   code: string;
   issuer: string | null; // null for native XLM
@@ -76,4 +89,29 @@ export interface BuildBatchResult {
   batchCount: number;
   network: "testnet" | "mainnet";
   publicKey: string;
+}
+
+/** A single entry from Horizon's account.balances array */
+export interface HorizonBalance {
+  asset_type: string;
+  asset_code?: string;
+  asset_issuer?: string;
+  balance: string;
+}
+
+/** Map of asset key ("XLM" or "CODE:ISSUER") to numeric balance */
+export type BalancesMap = Record<string, number>;
+
+/** Per-asset validation result */
+export interface AssetBalanceCheck {
+  asset_key: string;
+  required: number;
+  available: number;
+  sufficient: boolean;
+}
+
+/** Aggregate result for a full batch balance check */
+export interface BalanceValidationResult {
+  all_sufficient: boolean;
+  checks: AssetBalanceCheck[];
 }

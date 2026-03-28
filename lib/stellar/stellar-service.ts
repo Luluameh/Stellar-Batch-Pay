@@ -3,6 +3,7 @@
  */
 
 import {
+  Account,
   Keypair,
   Transaction,
   TransactionBuilder,
@@ -10,7 +11,7 @@ import {
   Networks,
   Asset as StellarAsset,
   Operation,
-  Server, // Declared Server here
+  Horizon,
 } from 'stellar-sdk';
 
 import { PaymentInstruction, BatchResult, PaymentResult, BatchConfig } from './types';
@@ -19,7 +20,7 @@ import { validatePaymentInstruction, validateBatchConfig } from './validator';
 
 export class StellarService {
   private keypair: Keypair;
-  private server: Server;
+  private server: Horizon.Server;
   private network: 'testnet' | 'mainnet';
   private maxOperationsPerTransaction: number;
 
@@ -38,7 +39,7 @@ export class StellarService {
     const serverUrl = config.network === 'testnet' 
       ? 'https://horizon-testnet.stellar.org'
       : 'https://horizon.stellar.org';
-    this.server = new Server(serverUrl);
+    this.server = new Horizon.Server(serverUrl);
   }
 
   /**
@@ -48,10 +49,6 @@ export class StellarService {
     const results: PaymentResult[] = [];
     const startTime = new Date();
 
-    // Fetch source account
-    const sourceAccount = await this.server.loadAccount(this.keypair.publicKey());
-    let sequenceNumber = BigInt(sourceAccount.sequenceNumber);
-
     // Process payments in batches
     const batches = this.createPaymentBatches(instructions);
     let successCount = 0;
@@ -59,6 +56,10 @@ export class StellarService {
 
     for (const batch of batches) {
       try {
+        // Fetch source account fresh for each batch to avoid sequence collisions
+        const sourceAccount = await this.server.loadAccount(this.keypair.publicKey());
+        const sequenceNumber = BigInt(sourceAccount.sequenceNumber());
+
         const transaction = await this.buildTransaction(batch, sequenceNumber);
         const result = await this.submitTransaction(transaction);
 
@@ -73,8 +74,6 @@ export class StellarService {
             });
             successCount++;
           }
-          // Increment sequence number after successful transaction
-          sequenceNumber += BigInt(1);
         } else {
           for (const instruction of batch) {
             results.push({
@@ -82,7 +81,7 @@ export class StellarService {
               amount: instruction.amount,
               asset: instruction.asset,
               status: 'failed',
-              error: result.error || 'Unknown error',
+              error: result.error || 'Transaction failed',
             });
             failCount++;
           }
@@ -104,6 +103,7 @@ export class StellarService {
     const totalAmount = instructions.reduce((sum, inst) => sum + parseFloat(inst.amount), 0);
 
     return {
+      batchId: `batch-${startTime.getTime()}`,
       totalRecipients: instructions.length,
       totalAmount: totalAmount.toString(),
       totalTransactions: batches.length,
@@ -155,16 +155,13 @@ export class StellarService {
   ): Promise<Transaction> {
     // Create transaction builder
     const transactionBuilder = new TransactionBuilder(
-      {
-        publicKey: this.keypair.publicKey(),
-        sequenceNumber: sequenceNumber.toString(),
-      },
+      new Account(this.keypair.publicKey(), sequenceNumber.toString()),
       {
         fee: BASE_FEE,
         networkPassphrase:
           this.network === 'testnet'
-            ? Networks.TESTNET_NETWORK_PASSPHRASE
-            : Networks.PUBLIC_NETWORK_PASSPHRASE,
+            ? Networks.TESTNET
+            : Networks.PUBLIC,
       }
     );
 
@@ -199,6 +196,8 @@ export class StellarService {
   private async submitTransaction(
     transaction: Transaction
   ): Promise<{ success: boolean; transactionHash?: string; error?: string }> {
+    const transactionHash = transaction.hash().toString('hex');
+
     try {
       // Sign transaction
       transaction.sign(this.keypair);
@@ -214,12 +213,14 @@ export class StellarService {
       } else {
         return {
           success: false,
-          error: response.result_codes?.operations?.join(', ') || 'Transaction failed',
+          transactionHash,
+          error: 'Transaction failed',
         };
       }
     } catch (error) {
       return {
         success: false,
+        transactionHash,
         error: error instanceof Error ? error.message : 'Unknown error',
       };
     }

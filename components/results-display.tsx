@@ -2,6 +2,7 @@
 
 import { BatchResult, PaymentInstruction } from '@/lib/stellar/types';
 import { Button } from '@/components/ui/button';
+import { formatAmount } from '@/lib/stellar';
 
 interface ResultsDisplayProps {
   result: BatchResult;
@@ -42,7 +43,7 @@ export function ResultsDisplay({ result, onRetry }: ResultsDisplayProps) {
           </div>
           <div className="flex justify-between">
             <span className="text-muted-foreground">Total Amount:</span>
-            <span className="font-mono">{result.totalAmount}</span>
+            <span className="font-mono">{formatAmount(result.totalAmount)}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-muted-foreground">Timestamp:</span>
@@ -66,17 +67,31 @@ export function ResultsDisplay({ result, onRetry }: ResultsDisplayProps) {
               {result.results.map((payment, idx) => (
                 <tr key={idx} className="border-t border-border hover:bg-secondary/50">
                   <td className="p-3 font-mono text-xs">{payment.recipient.slice(0, 20)}...</td>
-                  <td className="text-right p-3 font-mono">{payment.amount}</td>
+                  <td className="text-right p-3 font-mono">{formatAmount(payment.amount)}</td>
                   <td className="text-center p-3">
-                    <span
-                      className={`inline-block px-2 py-1 rounded text-xs font-semibold ${
-                        payment.status === 'success'
-                          ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100'
-                          : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100'
-                      }`}
-                    >
-                      {payment.status}
-                    </span>
+                    <div className="flex flex-col items-center gap-1">
+                      <span
+                        className={`inline-block px-2 py-1 rounded text-xs font-semibold ${
+                          payment.status === 'success'
+                            ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100'
+                            : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100'
+                        }`}
+                      >
+                        {payment.status}
+                      </span>
+                      {payment.transactionHash && (
+                        <a
+                          href={result.network === 'testnet' 
+                            ? `https://stellar.expert/explorer/testnet/tx/${payment.transactionHash}`
+                            : `https://stellar.expert/explorer/public/tx/${payment.transactionHash}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[10px] text-primary hover:underline flex items-center gap-0.5"
+                        >
+                          Check Status
+                        </a>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
