@@ -4,7 +4,7 @@
 
 import { StrKey } from 'stellar-sdk';
 
-import { PaymentInstruction, BatchConfig, HorizonBalance, BalancesMap, BalanceValidationResult } from './types';
+import { PaymentInstruction, MemoType, BatchConfig, HorizonBalance, BalancesMap, BalanceValidationResult } from './types';
 
 function isValidPublicKey(value: string): boolean {
   return StrKey.isValidEd25519PublicKey(value);
@@ -12,6 +12,38 @@ function isValidPublicKey(value: string): boolean {
 
 function isValidSecretSeed(value: string): boolean {
   return StrKey.isValidEd25519SecretSeed(value);
+}
+
+/**
+ * Validate a memo value based on its type.
+ * - MEMO_TEXT: must be <= 28 bytes (UTF-8)
+ * - MEMO_ID: must be a valid unsigned 64-bit integer
+ */
+export function validateMemo(memo: string, memoType: MemoType): { valid: boolean; error?: string } {
+  if (memoType === 'none' || !memo) {
+    return { valid: true };
+  }
+
+  if (memoType === 'text') {
+    const byteLength = new TextEncoder().encode(memo).length;
+    if (byteLength > 28) {
+      return { valid: false, error: `Memo text exceeds 28 bytes (got ${byteLength} bytes)` };
+    }
+    return { valid: true };
+  }
+
+  if (memoType === 'id') {
+    if (!/^\d+$/.test(memo)) {
+      return { valid: false, error: `Memo ID must be a valid integer (got "${memo}")` };
+    }
+    const value = BigInt(memo);
+    if (value < 0n || value > 18446744073709551615n) {
+      return { valid: false, error: `Memo ID must be a valid unsigned 64-bit integer` };
+    }
+    return { valid: true };
+  }
+
+  return { valid: false, error: `Invalid memo type: ${memoType}` };
 }
 
 export function validatePaymentInstruction(instruction: PaymentInstruction): { valid: boolean; error?: string } {
@@ -35,6 +67,15 @@ export function validatePaymentInstruction(instruction: PaymentInstruction): { v
 
   if (!instruction.asset || typeof instruction.asset !== 'string') {
     return { valid: false, error: 'Invalid asset: must be a non-empty string' };
+  }
+
+  // Validate memo if provided (before asset-specific checks)
+  if (instruction.memo) {
+    const memoType = instruction.memoType ?? 'text';
+    const memoResult = validateMemo(instruction.memo, memoType);
+    if (!memoResult.valid) {
+      return memoResult;
+    }
   }
 
   // Validate asset format: either 'XLM' or 'CODE:ISSUER'

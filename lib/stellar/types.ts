@@ -17,10 +17,14 @@ export interface JobState {
   updatedAt: string;
 }
 
+export type MemoType = 'text' | 'id' | 'none';
+
 export interface PaymentInstruction {
   address: string;
   amount: string;
   asset: string; // 'XLM' for native or 'CODE:ISSUER' for issued assets
+  memo?: string;
+  memoType?: MemoType; // defaults to 'text' when memo is provided
 }
 
 export interface PaymentValidationRow {

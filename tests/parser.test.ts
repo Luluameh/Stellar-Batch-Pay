@@ -134,6 +134,83 @@ GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER,100,XLM`;
   });
 });
 
+describe('Memo Parsing - JSON', () => {
+  test('parses JSON with memo fields', () => {
+    const json = JSON.stringify([
+      {
+        address: 'GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER',
+        amount: '100',
+        asset: 'XLM',
+        memo: 'Test payment',
+        memoType: 'text',
+      },
+    ]);
+    const result = parseJSON(json);
+    expect(result[0].memo).toBe('Test payment');
+    expect(result[0].memoType).toBe('text');
+  });
+
+  test('parses JSON with ID memo type', () => {
+    const json = JSON.stringify([
+      {
+        address: 'GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER',
+        amount: '100',
+        asset: 'XLM',
+        memo: '12345',
+        memoType: 'id',
+      },
+    ]);
+    const result = parseJSON(json);
+    expect(result[0].memo).toBe('12345');
+    expect(result[0].memoType).toBe('id');
+  });
+
+  test('parses JSON without memo fields', () => {
+    const json = JSON.stringify([
+      {
+        address: 'GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER',
+        amount: '100',
+        asset: 'XLM',
+      },
+    ]);
+    const result = parseJSON(json);
+    expect(result[0].memo).toBeUndefined();
+    expect(result[0].memoType).toBeUndefined();
+  });
+});
+
+describe('Memo Parsing - CSV', () => {
+  test('parses CSV with memo column', () => {
+    const csv = `address,amount,asset,memo,memoType
+GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER,100,XLM,Test payment,text`;
+    const result = parseCSV(csv);
+    expect(result[0].memo).toBe('Test payment');
+    expect(result[0].memoType).toBe('text');
+  });
+
+  test('parses CSV with ID memo type', () => {
+    const csv = `address,amount,asset,memo,memoType
+GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER,100,XLM,67890,id`;
+    const result = parseCSV(csv);
+    expect(result[0].memo).toBe('67890');
+    expect(result[0].memoType).toBe('id');
+  });
+
+  test('parses CSV without memo column', () => {
+    const csv = `address,amount,asset
+GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER,100,XLM`;
+    const result = parseCSV(csv);
+    expect(result[0].memo).toBeUndefined();
+  });
+
+  test('handles empty memo in CSV row', () => {
+    const csv = `address,amount,asset,memo,memoType
+GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER,100,XLM,,`;
+    const result = parseCSV(csv);
+    expect(result[0].memo).toBeUndefined();
+  });
+});
+
 describe('Payment File Analysis', () => {
   test('returns row-level validation feedback for invalid CSV rows', () => {
     const csv = `address,amount,asset

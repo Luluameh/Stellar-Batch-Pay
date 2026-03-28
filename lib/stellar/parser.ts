@@ -3,7 +3,7 @@
  */
 
 import Papa from 'papaparse';
-import { ParsedPaymentFile, PaymentInstruction } from './types';
+import { ParsedPaymentFile, PaymentInstruction, MemoType } from './types';
 import { validatePaymentInstruction } from './validator';
 
 export function parseJSON(content: string): PaymentInstruction[] {
@@ -11,13 +11,31 @@ export function parseJSON(content: string): PaymentInstruction[] {
     const data = JSON.parse(content);
 
     // Handle both array and object with payments property
-    const instructions = Array.isArray(data) ? data : data.payments;
+    const rawInstructions = Array.isArray(data) ? data : data.payments;
 
-    if (!Array.isArray(instructions)) {
+    if (!Array.isArray(rawInstructions)) {
       throw new Error('Expected an array of payment instructions or object with "payments" array');
     }
 
-    return instructions;
+    return rawInstructions.map((item: Record<string, unknown>) => {
+      const instruction: PaymentInstruction = {
+        address: String(item.address ?? ''),
+        amount: String(item.amount ?? ''),
+        asset: String(item.asset ?? ''),
+      };
+
+      if (item.memo != null && String(item.memo).trim() !== '') {
+        instruction.memo = String(item.memo).trim();
+        if (item.memoType != null) {
+          const mt = String(item.memoType).toLowerCase();
+          if (mt === 'text' || mt === 'id' || mt === 'none') {
+            instruction.memoType = mt as MemoType;
+          }
+        }
+      }
+
+      return instruction;
+    });
   } catch (error) {
     throw new Error(`Failed to parse JSON: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
@@ -51,11 +69,31 @@ export function parseCSV(content: string): PaymentInstruction[] {
     throw new Error('CSV must have "address", "amount", and "asset" columns');
   }
 
-  const instructions = parsed.data.map(row => ({
-    address: String(row.address || '').trim(),
-    amount: String(row.amount || '').trim(),
-    asset: String(row.asset || '').trim(),
-  }));
+  const hasMemo = headers.indexOf('memo') !== -1;
+  const hasMemoType = headers.indexOf('memotype') !== -1;
+
+  const instructions = parsed.data.map(row => {
+    const instruction: PaymentInstruction = {
+      address: String(row.address || '').trim(),
+      amount: String(row.amount || '').trim(),
+      asset: String(row.asset || '').trim(),
+    };
+
+    if (hasMemo) {
+      const memo = String(row.memo || '').trim();
+      if (memo) {
+        instruction.memo = memo;
+        if (hasMemoType) {
+          const mt = String(row.memotype || '').trim().toLowerCase();
+          if (mt === 'text' || mt === 'id' || mt === 'none') {
+            instruction.memoType = mt as MemoType;
+          }
+        }
+      }
+    }
+
+    return instruction;
+  });
 
   if (instructions.length === 0) {
     throw new Error('No valid payment instructions found in CSV');
@@ -129,6 +167,15 @@ export function parseFileStream(
           amount: String(row.amount || '').trim(),
           asset: String(row.asset || '').trim(),
         };
+
+        const memo = String(row.memo || '').trim();
+        if (memo) {
+          instruction.memo = memo;
+          const mt = String(row.memotype || row.memoType || '').trim().toLowerCase();
+          if (mt === 'text' || mt === 'id' || mt === 'none') {
+            instruction.memoType = mt as MemoType;
+          }
+        }
 
         if (!instruction.address || !instruction.amount || !instruction.asset) {
           aborted = true;

@@ -20,10 +20,10 @@ export function FileFormatDocumentation() {
           <h3 className="text-white font-semibold mb-3">CSV Format</h3>
           <div className="bg-slate-950 rounded-lg p-4 border border-slate-800">
             <pre className="text-slate-300 text-sm font-mono overflow-x-auto">
-              <code>{`recipient_address,amount,memo
-GDQP2KPGGKIHYJGXNUIYOMHARUARCA7DJTF5FO2FFOOKY3B2WSQHG4W37,100.50,Payment for services
-GCKFBEIYTK P93XOXZ7DOEKDJ3DDKXZB4GGDJ2BPWQ4FHGPGBWKJFXRPF,250.00,Monthly salary
-GDVXMSTPXZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7Q,75.25,Bonus payment`}</code>
+              <code>{`address,amount,asset,memo,memoType
+GDQP2KPGGKIHYJGXNUIYOMHARUARCA7DJTF5FO2FFOOKY3B2WSQHG4W37,100.50,XLM,Payment for services,text
+GCKFBEIYTKP93XOXZ7DOEKDJ3DDKXZB4GGDJ2BPWQ4FHGPGBWKJFXRPF,250.00,XLM,12345,id
+GDVXMSTPXZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7Q,75.25,XLM,,`}</code>
             </pre>
           </div>
         </div>
@@ -36,14 +36,18 @@ GDVXMSTPXZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7Q,75.25,Bonus payment`}</code>
               <code>{`{
   "payments": [
     {
-      "recipient_address": "GDQP2KPGGKIHYJGXNUIYOMHARUARCA7DJTF5FO2FFOOKY3B2WSQHG4W37",
+      "address": "GDQP2KPGGKIHYJGXNUIYOMHARUARCA7DJTF5FO2FFOOKY3B2WSQHG4W37",
       "amount": "100.50",
-      "memo": "Payment for services"
+      "asset": "XLM",
+      "memo": "Payment for services",
+      "memoType": "text"
     },
     {
-      "recipient_address": "GCKFBEIYTK P93XOXZ7DOEKDJ3DDKXZB4GGDJ2BPWQ4FHGPGBWKJFXRPF",
+      "address": "GCKFBEIYTKP93XOXZ7DOEKDJ3DDKXZB4GGDJ2BPWQ4FHGPGBWKJFXRPF",
       "amount": "250.00",
-      "memo": "Monthly salary"
+      "asset": "XLM",
+      "memo": "12345",
+      "memoType": "id"
     }
   ]
 }`}</code>
@@ -58,8 +62,9 @@ GDVXMSTPXZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7QFWDZ7Q,75.25,Bonus payment`}</code>
             <div>
               <h4 className="text-yellow-500 font-semibold mb-1">Important</h4>
               <p className="text-slate-300 text-sm">
-                All amounts must be in XLM and recipient addresses must be valid
-                Stellar addresses.
+                All recipient addresses must be valid Stellar addresses. Memo is
+                optional: text memos must be 28 bytes or less, ID memos must be
+                valid integers. Stellar supports one memo per transaction.
               </p>
             </div>
           </div>

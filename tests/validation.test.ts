@@ -9,6 +9,7 @@ import {
   validatePaymentInstruction,
   validateBatchConfig,
   validatePaymentInstructions,
+  validateMemo,
 } from '../lib/stellar/validator';
 
 const validSecretKey = Keypair.random().secret();
@@ -94,6 +95,139 @@ describe('Payment Instruction Validation', () => {
     });
     expect(result.valid).toBe(false);
     expect(result.error).toContain('checksum');
+  });
+});
+
+describe('Memo Validation', () => {
+  test('validates valid text memo', () => {
+    const result = validateMemo('Hello World', 'text');
+    expect(result.valid).toBe(true);
+  });
+
+  test('validates text memo at exactly 28 bytes', () => {
+    const memo = 'a'.repeat(28);
+    const result = validateMemo(memo, 'text');
+    expect(result.valid).toBe(true);
+  });
+
+  test('rejects text memo exceeding 28 bytes', () => {
+    const memo = 'a'.repeat(29);
+    const result = validateMemo(memo, 'text');
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('28 bytes');
+  });
+
+  test('rejects multi-byte text memo exceeding 28 bytes', () => {
+    // Each emoji is 4 bytes, so 8 emojis = 32 bytes > 28
+    const memo = '😀😀😀😀😀😀😀😀';
+    const result = validateMemo(memo, 'text');
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('28 bytes');
+  });
+
+  test('validates valid memo ID', () => {
+    const result = validateMemo('12345', 'id');
+    expect(result.valid).toBe(true);
+  });
+
+  test('validates memo ID zero', () => {
+    const result = validateMemo('0', 'id');
+    expect(result.valid).toBe(true);
+  });
+
+  test('rejects non-integer memo ID', () => {
+    const result = validateMemo('abc', 'id');
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('valid integer');
+  });
+
+  test('rejects negative memo ID', () => {
+    const result = validateMemo('-1', 'id');
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('valid integer');
+  });
+
+  test('rejects decimal memo ID', () => {
+    const result = validateMemo('12.5', 'id');
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('valid integer');
+  });
+
+  test('validates memo type none', () => {
+    const result = validateMemo('anything', 'none');
+    expect(result.valid).toBe(true);
+  });
+
+  test('validates empty memo', () => {
+    const result = validateMemo('', 'text');
+    expect(result.valid).toBe(true);
+  });
+});
+
+describe('Payment Instruction Memo Validation', () => {
+  test('validates payment with valid text memo', () => {
+    const result = validatePaymentInstruction({
+      address: validAddress,
+      amount: '100',
+      asset: 'XLM',
+      memo: 'Payment ref',
+      memoType: 'text',
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  test('validates payment with valid ID memo', () => {
+    const result = validatePaymentInstruction({
+      address: validAddress,
+      amount: '100',
+      asset: 'XLM',
+      memo: '99999',
+      memoType: 'id',
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  test('rejects payment with memo text exceeding 28 bytes', () => {
+    const result = validatePaymentInstruction({
+      address: validAddress,
+      amount: '100',
+      asset: 'XLM',
+      memo: 'a'.repeat(29),
+      memoType: 'text',
+    });
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('28 bytes');
+  });
+
+  test('rejects payment with invalid memo ID', () => {
+    const result = validatePaymentInstruction({
+      address: validAddress,
+      amount: '100',
+      asset: 'XLM',
+      memo: 'not-a-number',
+      memoType: 'id',
+    });
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('valid integer');
+  });
+
+  test('defaults to text memo type when not specified', () => {
+    const result = validatePaymentInstruction({
+      address: validAddress,
+      amount: '100',
+      asset: 'XLM',
+      memo: 'Short memo',
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  test('validates payment without memo', () => {
+    const result = validatePaymentInstruction({
+      address: validAddress,
+      amount: '100',
+      asset: 'XLM',
+    });
+    expect(result.valid).toBe(true);
   });
 });
 

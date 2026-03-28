@@ -96,8 +96,20 @@ export class StellarService {
 
       for (const batch of batches) {
         try {
-          // Unique memo for batch
-          const memoId = `bp-${Date.now()}-${txCount}`;
+          // Use user-provided memo from the first payment that has one,
+          // otherwise fall back to the system-generated tracking memo.
+          // Stellar supports only one memo per transaction.
+          const firstMemoPayment = batch.payments.find(p => p.memo);
+          let memo: ReturnType<typeof Memo.text>;
+          if (firstMemoPayment?.memo) {
+            const memoType = firstMemoPayment.memoType ?? 'text';
+            memo = memoType === 'id'
+              ? Memo.id(firstMemoPayment.memo)
+              : Memo.text(firstMemoPayment.memo);
+          } else {
+            const memoId = `bp-${Date.now()}-${txCount}`;
+            memo = Memo.text(memoId.slice(0, 28));
+          }
 
           let builder = new TransactionBuilder(sourceAccount, {
             fee: String(fee),
@@ -105,7 +117,7 @@ export class StellarService {
               this.network === "testnet"
                 ? Networks.TESTNET
                 : Networks.PUBLIC,
-          }).addMemo(Memo.text(memoId.slice(0, 28)));
+          }).addMemo(memo);
 
           for (const payment of batch.payments) {
             const validation = validatePaymentInstruction(payment);

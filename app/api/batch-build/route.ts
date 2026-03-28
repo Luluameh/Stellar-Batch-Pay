@@ -22,6 +22,8 @@ import { createBatches, parseAsset } from "@/lib/stellar/batcher";
 import {
   validatePaymentInstruction,
   validatePaymentInstructions,
+  buildBalancesMap,
+  validateBalances,
 } from "@/lib/stellar/validator";
 import type { PaymentInstruction } from "@/lib/stellar/types";
 import { getRecommendedFee } from "@/lib/stellar/fee-service";
@@ -88,6 +90,22 @@ export async function POST(request: NextRequest) {
 
     const sourceAccount = await server.loadAccount(publicKey);
 
+    // Validate source account has sufficient balance for all assets
+    const balancesMap = buildBalancesMap(
+      sourceAccount.balances as { asset_type: string; asset_code?: string; asset_issuer?: string; balance: string }[],
+    );
+    const balanceCheck = validateBalances(payments, balancesMap);
+    if (!balanceCheck.all_sufficient) {
+      const insufficient = balanceCheck.checks
+        .filter((c) => !c.sufficient)
+        .map((c) => `${c.asset_key}: need ${c.required}, have ${c.available}`)
+        .join("; ");
+      return NextResponse.json(
+        { error: `Insufficient balance: ${insufficient}` },
+        { status: 400 },
+      );
+    }
+
     // Await the batches properly (was causing 'length' error)
     const batches = await createBatches(payments, MAX_OPS, { network });
 
@@ -101,12 +119,26 @@ export async function POST(request: NextRequest) {
 
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
-      const memoId = `bp-${Date.now()}-${i}`;
+
+      // Use user-provided memo from the first payment that has one,
+      // otherwise fall back to the system-generated tracking memo.
+      // Stellar supports only one memo per transaction.
+      const firstMemoPayment = batch.payments.find(p => p.memo);
+      let memo: ReturnType<typeof Memo.text>;
+      if (firstMemoPayment?.memo) {
+        const memoType = firstMemoPayment.memoType ?? 'text';
+        memo = memoType === 'id'
+          ? Memo.id(firstMemoPayment.memo)
+          : Memo.text(firstMemoPayment.memo);
+      } else {
+        const memoId = `bp-${Date.now()}-${i}`;
+        memo = Memo.text(memoId.slice(0, 28));
+      }
 
       let builder = new TransactionBuilder(sourceAccount, {
         fee: String(dynamicFee),
         networkPassphrase,
-      }).addMemo(Memo.text(memoId.slice(0, 28)));
+      }).addMemo(memo);
 
       for (const payment of batch.payments) {
         const pv = validatePaymentInstruction(payment);
