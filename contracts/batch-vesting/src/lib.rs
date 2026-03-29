@@ -328,12 +328,8 @@ impl BatchVestingContract {
             Self::extend_ttl_vesting(&env, &recipient, idx);
 
             env.events().publish(
-                (
-                    Symbol::new(&env, "VestingDeposited"),
-                    sender.clone(),
-                    recipient,
-                ),
-                (amount, unlock_time),
+                (Symbol::new(&env, "VestingDeposited"), sender.clone(), recipient),
+                (amount, unlock_time, token.clone()),
             );
         }
 
@@ -454,7 +450,7 @@ impl BatchVestingContract {
 
         env.events().publish(
             (Symbol::new(&env, "VestingRevoked"), recipient, sender),
-            (revoked_amount, unlock_time),
+            (revoked_amount, unlock_time, token),
         );
     }
 
@@ -536,12 +532,8 @@ impl BatchVestingContract {
             token_client.transfer(&env.current_contract_address(), &sender, &revoked_amount);
 
             env.events().publish(
-                (
-                    Symbol::new(&env, "VestingRevoked"),
-                    recipient.clone(),
-                    sender,
-                ),
-                (revoked_amount, unlock_time),
+                (Symbol::new(&env, "VestingRevoked"), recipient.clone(), sender),
+                (revoked_amount, unlock_time, token),
             );
             results.set(pos, true);
         }
@@ -596,7 +588,7 @@ impl BatchVestingContract {
 
                 env.events().publish(
                     (Symbol::new(&env, "VestingClaimed"), recipient.clone()),
-                    (vesting.amount,),
+                    (vesting.amount, vesting.token.clone()),
                 );
             }
         }

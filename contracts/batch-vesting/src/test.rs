@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
-    token, Address, Env, IntoVal, String, Symbol, Vec,
+    token, Address, Env, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
 use token::Client as TokenClient;
 use token::StellarAssetClient as TokenAdminClient;
@@ -407,9 +407,10 @@ fn test_events_emission() {
             if topic == deposit_symbol {
                 let evt_sender: Address = topics.get(1).unwrap().into_val(&env);
                 let evt_recipient: Address = topics.get(2).unwrap().into_val(&env);
-                let (evt_amount, evt_unlock): (i128, u64) = data.into_val(&env);
+                let (evt_amount, evt_unlock, evt_token): (i128, u64, Address) = data.into_val(&env);
                 assert_eq!(evt_sender, sender);
                 assert_eq!(evt_unlock, unlock_time);
+                assert_eq!(evt_token, token.address);
                 if evt_recipient == recipient1 {
                     assert_eq!(evt_amount, 100);
                     deposit_found += 1;
@@ -440,7 +441,7 @@ fn test_events_emission() {
             let topic: Symbol = topics.get(0).unwrap().into_val(&env);
             if topic == claim_symbol {
                 let evt_recipient: Address = topics.get(1).unwrap().into_val(&env);
-                let (evt_amount,): (i128,) = data.into_val(&env);
+                let (evt_amount, _evt_token): (i128, Address) = data.into_val(&env);
                 assert_eq!(evt_recipient, recipient1);
                 assert_eq!(evt_amount, 100);
                 claim1_found = true;
@@ -459,7 +460,7 @@ fn test_events_emission() {
             let topic: Symbol = topics.get(0).unwrap().into_val(&env);
             if topic == claim_symbol {
                 let evt_recipient: Address = topics.get(1).unwrap().into_val(&env);
-                let (evt_amount,): (i128,) = data.into_val(&env);
+                let (evt_amount, _evt_token): (i128, Address) = data.into_val(&env);
                 assert_eq!(evt_recipient, recipient2);
                 assert_eq!(evt_amount, 200);
                 claim2_found = true;
@@ -943,9 +944,10 @@ fn test_batch_revoke_events_emission() {
             if topic == revoke_symbol {
                 let evt_recipient: Address = topics.get(1).unwrap().into_val(&env);
                 let evt_sender: Address = topics.get(2).unwrap().into_val(&env);
-                let (evt_amount, evt_unlock): (i128, u64) = data.into_val(&env);
+                let (evt_amount, evt_unlock, evt_token): (i128, u64, Address) = data.into_val(&env);
                 assert_eq!(evt_sender, sender);
                 assert_eq!(evt_unlock, unlock_time);
+                assert_eq!(evt_token, token.address);
                 if evt_recipient == recipient1 {
                     assert_eq!(evt_amount, 100);
                     revoke_found += 1;
@@ -1583,4 +1585,115 @@ fn test_get_vestings_pagination() {
     // start=5, limit=2 => returns 0 elements (out of bounds)
     let page4 = client.get_vestings(&recipient, &5, &2);
     assert_eq!(page4.len(), 0);
+}
+
+// ── #197: Event payload includes token address ──────────────────────────────
+
+/// Helper: find the last event matching a topic symbol and deserialize its data.
+fn find_event_data<T: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>(
+    env: &Env,
+    event_name: &str,
+) -> T {
+    let events = env.events().all();
+    let target = Symbol::new(env, event_name);
+    for i in (0..events.len()).rev() {
+        let (_, topics, data) = events.get(i).unwrap();
+        if topics.len() >= 1 {
+            let first_val = topics.get(0).unwrap();
+            let first_sym: Result<Symbol, _> = first_val.try_into_val(env);
+            if let Ok(sym) = first_sym {
+                if sym == target {
+                    return data.try_into_val(env).unwrap();
+                }
+            }
+        }
+    }
+    panic!("Event '{}' not found", event_name);
+}
+
+#[test]
+fn test_deposit_event_includes_token_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&sender, &1000);
+
+    let recipients = Vec::from_array(&env, [recipient.clone()]);
+    let amounts = Vec::from_array(&env, [100i128]);
+    let unlock_time = 1000u64;
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.deposit(&sender, &token.address, &recipients, &amounts, &unlock_time);
+
+    let payload: (i128, u64, Address) = find_event_data(&env, "VestingDeposited");
+    assert_eq!(payload.0, 100i128, "amount mismatch");
+    assert_eq!(payload.1, 1000u64, "unlock_time mismatch");
+    assert_eq!(payload.2, token.address, "token address missing from deposit event");
+}
+
+#[test]
+fn test_claim_event_includes_token_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&sender, &1000);
+
+    let recipients = Vec::from_array(&env, [recipient.clone()]);
+    let amounts = Vec::from_array(&env, [100i128]);
+    let unlock_time = 1000u64;
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.deposit(&sender, &token.address, &recipients, &amounts, &unlock_time);
+
+    env.ledger().with_mut(|li| li.timestamp = 1001);
+    client.claim(&recipient);
+
+    let payload: (i128, Address) = find_event_data(&env, "VestingClaimed");
+    assert_eq!(payload.0, 100i128, "amount mismatch");
+    assert_eq!(payload.1, token.address, "token address missing from claim event");
+}
+
+#[test]
+fn test_revoke_event_includes_token_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&sender, &1000);
+
+    let recipients = Vec::from_array(&env, [recipient.clone()]);
+    let amounts = Vec::from_array(&env, [100i128]);
+    let unlock_time = 1000u64;
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.deposit(&sender, &token.address, &recipients, &amounts, &unlock_time);
+
+    env.ledger().with_mut(|li| li.timestamp = 500);
+    client.revoke(&sender, &recipient, &0);
+
+    let payload: (i128, u64, Address) = find_event_data(&env, "VestingRevoked");
+    assert_eq!(payload.0, 100i128, "amount mismatch");
+    assert_eq!(payload.1, 1000u64, "unlock_time mismatch");
+    assert_eq!(payload.2, token.address, "token address missing from revoke event");
 }
