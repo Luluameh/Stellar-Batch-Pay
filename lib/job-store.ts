@@ -1,26 +1,107 @@
 /**
- * In-memory job store for async batch processing.
+ * Durable job store backed by SQLite (better-sqlite3).
  *
- * Jobs are stored in a module-level Map that persists for the lifetime of the
- * Node.js process. A simple LRU eviction policy (max 100 jobs) prevents
- * unbounded memory growth.
+ * Replaces the previous in-memory Map so that batch progress survives server
+ * restarts and serverless cold-starts that recycle the execution context.
  *
- * To swap in a durable store (Redis, Postgres) in the future, replace the
- * implementations of createJob / getJob / updateJob without changing callers.
+ * Schema
+ * ──────
+ * jobs
+ *   jobId       TEXT PRIMARY KEY
+ *   status      TEXT NOT NULL
+ *   totalBatches    INTEGER NOT NULL DEFAULT 0
+ *   completedBatches INTEGER NOT NULL DEFAULT 0
+ *   payments    TEXT NOT NULL   -- JSON-serialised PaymentInstruction[]
+ *   network     TEXT NOT NULL
+ *   result      TEXT            -- JSON-serialised BatchResult | NULL
+ *   error       TEXT
+ *   createdAt   TEXT NOT NULL
+ *   updatedAt   TEXT NOT NULL
+ *
+ * Indexes on jobId (implicit via PRIMARY KEY) and createdAt for history queries.
  */
 
-import type { JobState, JobStatus, PaymentInstruction } from "./stellar/types";
+import Database from "better-sqlite3";
+import path from "path";
+import type { JobState, JobStatus, PaymentInstruction, BatchResult } from "./stellar/types";
 
-const MAX_JOBS = 100;
-const jobStore = new Map<string, JobState>();
+// ---------------------------------------------------------------------------
+// DB initialisation
+// ---------------------------------------------------------------------------
 
-function evictOldestIfNeeded(): void {
-  if (jobStore.size >= MAX_JOBS) {
-    // Delete the oldest entry (Map iteration order = insertion order)
-    const firstKey = jobStore.keys().next().value;
-    if (firstKey) jobStore.delete(firstKey);
-  }
+const DB_PATH = process.env.JOB_STORE_PATH ?? path.join(process.cwd(), "data", "jobs.db");
+
+let _db: Database.Database | null = null;
+
+function getDb(): Database.Database {
+  if (_db) return _db;
+
+  // Ensure the data directory exists at runtime
+  const { mkdirSync } = require("fs") as typeof import("fs");
+  mkdirSync(path.dirname(DB_PATH), { recursive: true });
+
+  _db = new Database(DB_PATH);
+
+  // WAL mode for better concurrent read performance
+  _db.pragma("journal_mode = WAL");
+  _db.pragma("foreign_keys = ON");
+
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS jobs (
+      jobId            TEXT PRIMARY KEY,
+      status           TEXT NOT NULL,
+      totalBatches     INTEGER NOT NULL DEFAULT 0,
+      completedBatches INTEGER NOT NULL DEFAULT 0,
+      payments         TEXT NOT NULL,
+      network          TEXT NOT NULL,
+      result           TEXT,
+      error            TEXT,
+      createdAt        TEXT NOT NULL,
+      updatedAt        TEXT NOT NULL
+    );
+
+    -- Index for history queries ordered by creation time
+    CREATE INDEX IF NOT EXISTS idx_jobs_createdAt ON jobs (createdAt DESC);
+  `);
+
+  return _db;
 }
+
+// ---------------------------------------------------------------------------
+// Row ↔ JobState helpers
+// ---------------------------------------------------------------------------
+
+interface JobRow {
+  jobId: string;
+  status: JobStatus;
+  totalBatches: number;
+  completedBatches: number;
+  payments: string;
+  network: "testnet" | "mainnet";
+  result: string | null;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function rowToJobState(row: JobRow): JobState {
+  return {
+    jobId: row.jobId,
+    status: row.status,
+    totalBatches: row.totalBatches,
+    completedBatches: row.completedBatches,
+    payments: JSON.parse(row.payments) as PaymentInstruction[],
+    network: row.network,
+    result: row.result ? (JSON.parse(row.result) as BatchResult) : undefined,
+    error: row.error ?? undefined,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Public API  (same surface as the old in-memory store)
+// ---------------------------------------------------------------------------
 
 /**
  * Create a new job and return its ID.
@@ -31,25 +112,15 @@ export function createJob(
   network: "testnet" | "mainnet",
   signedTransactions?: string[],
 ): string {
-  evictOldestIfNeeded();
-
+  const db = getDb();
   const jobId = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  const job: JobState = {
-    jobId,
-    status: "queued",
-    totalBatches: signedTransactions?.length ?? 0, // For signed txs, each XDR is one batch
-    completedBatches: 0,
-    payments,
-    network,
-    createdAt: now,
-    updatedAt: now,
-    // #300: Store pre-signed transactions if provided
-    signedTransactions,
-  };
+  db.prepare(`
+    INSERT INTO jobs (jobId, status, totalBatches, completedBatches, payments, network, createdAt, updatedAt)
+    VALUES (?, 'queued', 0, 0, ?, ?, ?, ?)
+  `).run(jobId, JSON.stringify(payments), network, now, now);
 
-  jobStore.set(jobId, job);
   return jobId;
 }
 
@@ -57,7 +128,9 @@ export function createJob(
  * Retrieve a job by ID. Returns undefined if not found.
  */
 export function getJob(jobId: string): JobState | undefined {
-  return jobStore.get(jobId);
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM jobs WHERE jobId = ?").get(jobId) as JobRow | undefined;
+  return row ? rowToJobState(row) : undefined;
 }
 
 /**
@@ -67,19 +140,91 @@ export function updateJob(
   jobId: string,
   patch: Partial<Omit<JobState, "jobId" | "createdAt">>,
 ): void {
-  const job = jobStore.get(jobId);
-  if (!job) return;
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM jobs WHERE jobId = ?").get(jobId) as JobRow | undefined;
+  if (!row) return;
 
-  jobStore.set(jobId, {
-    ...job,
-    ...patch,
-    updatedAt: new Date().toISOString(),
-  });
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    UPDATE jobs SET
+      status           = ?,
+      totalBatches     = ?,
+      completedBatches = ?,
+      result           = ?,
+      error            = ?,
+      updatedAt        = ?
+    WHERE jobId = ?
+  `).run(
+    patch.status           ?? row.status,
+    patch.totalBatches     ?? row.totalBatches,
+    patch.completedBatches ?? row.completedBatches,
+    patch.result !== undefined ? JSON.stringify(patch.result) : row.result,
+    patch.error            ?? row.error,
+    now,
+    jobId,
+  );
 }
 
 /**
- * Return all jobs (for debugging / admin purposes).
+ * Return all jobs ordered by creation time descending (newest first).
+ * Accepts optional filters for the batch history endpoint.
  */
-export function getAllJobs(): JobState[] {
-  return Array.from(jobStore.values());
+export function getAllJobs(opts?: {
+  limit?: number;
+  offset?: number;
+  status?: JobStatus;
+  network?: "testnet" | "mainnet";
+}): JobState[] {
+  const db = getDb();
+
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+
+  if (opts?.status) {
+    conditions.push("status = ?");
+    params.push(opts.status);
+  }
+  if (opts?.network) {
+    conditions.push("network = ?");
+    params.push(opts.network);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limit  = opts?.limit  ?? 50;
+  const offset = opts?.offset ?? 0;
+
+  params.push(limit, offset);
+
+  const rows = db
+    .prepare(`SELECT * FROM jobs ${where} ORDER BY createdAt DESC LIMIT ? OFFSET ?`)
+    .all(...params) as JobRow[];
+
+  return rows.map(rowToJobState);
+}
+
+/**
+ * Return the total count of jobs (optionally filtered).
+ */
+export function countJobs(opts?: {
+  status?: JobStatus;
+  network?: "testnet" | "mainnet";
+}): number {
+  const db = getDb();
+
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+
+  if (opts?.status) {
+    conditions.push("status = ?");
+    params.push(opts.status);
+  }
+  if (opts?.network) {
+    conditions.push("network = ?");
+    params.push(opts.network);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const row = db.prepare(`SELECT COUNT(*) as cnt FROM jobs ${where}`).get(...params) as { cnt: number };
+  return row.cnt;
 }

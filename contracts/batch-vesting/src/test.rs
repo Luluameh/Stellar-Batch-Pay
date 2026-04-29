@@ -2546,3 +2546,230 @@ fn test_partial_claim_zero_amount_fails() {
     // Zero amount must fail with InvalidAmount (#5)
     client.claim(&recipient, &0, &0);
 }
+
+// ── #299/#303: Arithmetic safety in calculate_vested_amount ──────────────────
+
+/// Verify that step-based vesting with maximum i128 total_amount does not
+/// overflow.  With checked arithmetic the contract must return the correct
+/// vested amount rather than panicking or silently wrapping.
+#[test]
+fn test_calculate_vested_amount_max_i128_no_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender    = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+
+    // Mint a very large (but not max i128) amount so the token contract
+    // accepts it.  We use i64::MAX as a safe large value.
+    let large_amount: i128 = i64::MAX as i128;
+    token_admin.mint(&sender, &large_amount);
+
+    // step = 100, duration = 1000 → 10 steps
+    let start_time: u64 = 0;
+    let end_time:   u64 = 1000;
+    let step:       u64 = 100;
+
+    env.ledger().with_mut(|li| li.timestamp = start_time);
+    client.deposit(
+        &sender,
+        &Vec::from_array(&env, [token.address.clone()]),
+        &Vec::from_array(&env, [recipient.clone()]),
+        &Vec::from_array(&env, [large_amount]),
+        &start_time,
+        &end_time,
+        &step,
+        &Vec::from_array(&env, [String::from_str(&env, "")]),
+    );
+
+    // Advance to step 5 of 10 → should be able to claim half
+    env.ledger().with_mut(|li| li.timestamp = 500);
+    let expected_claimable = large_amount / 2;
+    // claim should succeed without overflow panic
+    client.claim(&recipient, &0, &expected_claimable);
+    assert_eq!(token.balance(&recipient), expected_claimable);
+}
+
+/// Overflow path: total * current_step overflows i128 before division.
+/// The contract must return VestingError::Overflow (#13) rather than panicking
+/// with an uncontrolled trap.
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #13)")]
+fn test_calculate_vested_amount_overflow_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender    = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+
+    // Use i64::MAX so the token contract accepts the mint, but the
+    // intermediate product total * current_step will overflow i128 when
+    // current_step is also near i64::MAX.
+    let total: i128 = i64::MAX as i128;
+    token_admin.mint(&sender, &total);
+
+    // step = 1 (continuous), duration = i64::MAX seconds
+    // At elapsed = i64::MAX - 1, current_step = i64::MAX - 1
+    // total * current_step ≈ (i64::MAX)² >> i128::MAX → overflow
+    let start_time: u64 = 0;
+    let end_time:   u64 = u64::MAX / 2; // large duration
+    let step:       u64 = 1;
+
+    env.ledger().with_mut(|li| li.timestamp = start_time);
+    client.deposit(
+        &sender,
+        &Vec::from_array(&env, [token.address.clone()]),
+        &Vec::from_array(&env, [recipient.clone()]),
+        &Vec::from_array(&env, [total]),
+        &start_time,
+        &end_time,
+        &step,
+        &Vec::from_array(&env, [String::from_str(&env, "")]),
+    );
+
+    // Advance to a point where total * elapsed overflows i128
+    env.ledger().with_mut(|li| li.timestamp = (i64::MAX - 1) as u64);
+    // This claim must trigger VestingError::Overflow (#13)
+    client.claim(&recipient, &0, &1);
+}
+
+// ── #308: batch_revoke sorting / InvalidInput ─────────────────────────────────
+
+/// Unsorted input (ascending index order for the same recipient) must be
+/// rejected with VestingError::InvalidInput (#18).
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #18)")]
+fn test_batch_revoke_unsorted_input_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender    = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+    token_admin.mint(&sender, &600);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+
+    // Deposit 3 schedules for the same recipient
+    for _ in 0..3 {
+        client.deposit(
+            &sender,
+            &Vec::from_array(&env, [token.address.clone()]),
+            &Vec::from_array(&env, [recipient.clone()]),
+            &Vec::from_array(&env, [100i128]),
+            &0,
+            &1000,
+            &0,
+            &Vec::from_array(&env, [String::from_str(&env, "")]),
+        );
+    }
+
+    // Provide requests in ASCENDING order (0, 1, 2) — must be rejected
+    let requests = Vec::from_array(&env, [
+        RevokeRequest { recipient: recipient.clone(), index: 0 },
+        RevokeRequest { recipient: recipient.clone(), index: 1 },
+        RevokeRequest { recipient: recipient.clone(), index: 2 },
+    ]);
+
+    client.batch_revoke(&sender, &requests);
+}
+
+/// Correctly sorted input (descending index order) must succeed.
+#[test]
+fn test_batch_revoke_sorted_input_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender    = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+    token_admin.mint(&sender, &300);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+
+    // Deposit 3 schedules
+    for _ in 0..3 {
+        client.deposit(
+            &sender,
+            &Vec::from_array(&env, [token.address.clone()]),
+            &Vec::from_array(&env, [recipient.clone()]),
+            &Vec::from_array(&env, [100i128]),
+            &0,
+            &1000,
+            &0,
+            &Vec::from_array(&env, [String::from_str(&env, "")]),
+        );
+    }
+
+    // Provide requests in DESCENDING order (2, 1, 0) — must succeed
+    let requests = Vec::from_array(&env, [
+        RevokeRequest { recipient: recipient.clone(), index: 2 },
+        RevokeRequest { recipient: recipient.clone(), index: 1 },
+        RevokeRequest { recipient: recipient.clone(), index: 0 },
+    ]);
+
+    let results = client.batch_revoke(&sender, &requests);
+    // All three revocations should succeed
+    assert_eq!(results.get(0).unwrap(), true);
+    assert_eq!(results.get(1).unwrap(), true);
+    assert_eq!(results.get(2).unwrap(), true);
+}
+
+/// Different recipients in a single batch_revoke call are independent —
+/// their relative order does not matter, only same-recipient ordering is
+/// enforced.
+#[test]
+fn test_batch_revoke_different_recipients_any_order() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender     = Address::generate(&env);
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+    token_admin.mint(&sender, &200);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+
+    client.deposit(
+        &sender,
+        &Vec::from_array(&env, [token.address.clone(), token.address.clone()]),
+        &Vec::from_array(&env, [recipient1.clone(), recipient2.clone()]),
+        &Vec::from_array(&env, [100i128, 100i128]),
+        &0,
+        &1000,
+        &0,
+        &Vec::from_array(&env, [
+            String::from_str(&env, ""),
+            String::from_str(&env, ""),
+        ]),
+    );
+
+    // recipient2 index 0 before recipient1 index 0 — different recipients,
+    // so ordering validation must not reject this.
+    let requests = Vec::from_array(&env, [
+        RevokeRequest { recipient: recipient2.clone(), index: 0 },
+        RevokeRequest { recipient: recipient1.clone(), index: 0 },
+    ]);
+
+    let results = client.batch_revoke(&sender, &requests);
+    assert_eq!(results.get(0).unwrap(), true);
+    assert_eq!(results.get(1).unwrap(), true);
+}
