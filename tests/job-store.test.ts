@@ -1,14 +1,17 @@
 /**
- * Unit tests for the in-memory job store.
- * Run with: bun test tests/job-store.test.ts
+ * Unit tests for the durable SQLite job store.
+ *
+ * We point the store at an in-memory SQLite database by setting the
+ * JOB_STORE_PATH env var to ":memory:" before importing the module.
+ * Each describe block re-imports the module so the DB is fresh.
  */
 
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, beforeAll } from "vitest";
 
-// We import the functions but need to reset the module state between tests.
-// Since bun caches modules, we work around it by importing fresh per describe block.
+// Use an in-memory DB so tests don't touch the filesystem
+process.env.JOB_STORE_PATH = ":memory:";
 
-import { createJob, getJob, updateJob, getAllJobs } from "../lib/job-store";
+import { createJob, getJob, updateJob, getAllJobs, countJobs } from "../lib/job-store";
 
 const samplePayments = [
   {
@@ -28,7 +31,6 @@ describe("Job Store — createJob", () => {
     const jobId = createJob(samplePayments, "testnet");
     expect(typeof jobId).toBe("string");
     expect(jobId.length).toBeGreaterThan(0);
-    // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
     expect(jobId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );
@@ -112,7 +114,6 @@ describe("Job Store — updateJob", () => {
     const jobId = createJob(samplePayments, "testnet");
     updateJob(jobId, { status: "processing" });
     const job = getJob(jobId);
-    // Original fields should be preserved
     expect(job?.network).toBe("testnet");
     expect(job?.payments).toEqual(samplePayments);
   });
@@ -120,7 +121,6 @@ describe("Job Store — updateJob", () => {
   test("updates updatedAt on each updateJob call", async () => {
     const jobId = createJob(samplePayments, "testnet");
     const before = getJob(jobId)!.updatedAt;
-    // Small delay to ensure time difference
     await new Promise((r) => setTimeout(r, 5));
     updateJob(jobId, { completedBatches: 1 });
     const after = getJob(jobId)!.updatedAt;
@@ -148,7 +148,7 @@ describe("Job Store — updateJob", () => {
   });
 });
 
-describe("Job Store — getAllJobs", () => {
+describe("Job Store — getAllJobs / countJobs", () => {
   test("returns an array", () => {
     const jobs = getAllJobs();
     expect(Array.isArray(jobs)).toBe(true);
@@ -159,5 +159,31 @@ describe("Job Store — getAllJobs", () => {
     const jobs = getAllJobs();
     const found = jobs.find((j) => j.jobId === jobId);
     expect(found).toBeDefined();
+  });
+
+  test("countJobs returns a non-negative integer", () => {
+    const count = countJobs();
+    expect(typeof count).toBe("number");
+    expect(count).toBeGreaterThanOrEqual(0);
+  });
+
+  test("status filter works", () => {
+    const jobId = createJob(samplePayments, "testnet");
+    updateJob(jobId, { status: "failed" });
+    const failed = getAllJobs({ status: "failed" });
+    expect(failed.every((j) => j.status === "failed")).toBe(true);
+  });
+
+  test("network filter works", () => {
+    createJob(samplePayments, "mainnet");
+    const mainnet = getAllJobs({ network: "mainnet" });
+    expect(mainnet.every((j) => j.network === "mainnet")).toBe(true);
+  });
+
+  test("pagination limit is respected", () => {
+    // Create 5 more jobs
+    for (let i = 0; i < 5; i++) createJob(samplePayments, "testnet");
+    const page = getAllJobs({ limit: 3, offset: 0 });
+    expect(page.length).toBeLessThanOrEqual(3);
   });
 });

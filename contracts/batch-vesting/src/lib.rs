@@ -143,6 +143,8 @@ pub enum VestingError {
     FeeMismatch = 16,
     /// Caller is not the recipient of the vesting schedule.
     NotRecipient = 17,
+    /// #308: batch_revoke requests were not provided in strictly descending index order.
+    InvalidInput = 18,
 }
 
 impl BatchVestingContract {
@@ -372,24 +374,45 @@ impl BatchVestingContract {
         env.storage().persistent().remove(&DataKey::UpgradeProposal);
     }
 
-    fn calculate_vested_amount(total: i128, elapsed: i128, duration: i128, step: u64) -> i128 {
+    /// Calculate the vested amount using safe checked arithmetic.
+    ///
+    /// #299/#303: Direct multiplication `total * current_step` can overflow i128
+    /// for large token amounts or long vesting durations before the division
+    /// brings the value back into range.  All arithmetic now uses checked_mul /
+    /// checked_div so an overflow returns VestingError::Overflow instead of
+    /// panicking or silently wrapping.
+    fn calculate_vested_amount(env: &Env, total: i128, elapsed: i128, duration: i128, step: u64) -> i128 {
         if step == 0 {
-            // Default: Cliff behavior (all at end)
+            // Default: Cliff behavior — all tokens unlock at end_time
             if elapsed >= duration {
                 total
             } else {
                 0
             }
         } else {
-            // Step-based linear vesting
+            // Step-based linear vesting: vested = total * (elapsed / step) / (duration / step)
             let step_i128 = step as i128;
-            let num_steps = duration / step_i128;
-            let current_step = elapsed / step_i128;
-            
+
+            // Both divisions are exact by construction (validated at deposit time via
+            // InvalidVestingStep), so checked_div is a safety net, not a rounding path.
+            let num_steps = duration
+                .checked_div(step_i128)
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::Overflow));
+            let current_step = elapsed
+                .checked_div(step_i128)
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::Overflow));
+
             if current_step >= num_steps {
                 total
             } else {
-                (total * current_step) / num_steps
+                // Intermediate product `total * current_step` can overflow i128 for
+                // very large token amounts; checked_mul catches this before division.
+                let numerator = total
+                    .checked_mul(current_step)
+                    .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::Overflow));
+                numerator
+                    .checked_div(num_steps)
+                    .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::Overflow))
             }
         }
     }
@@ -853,6 +876,7 @@ impl BatchVestingContract {
         };
 
         let vested_amount = Self::calculate_vested_amount(
+            &env,
             vesting.total_amount,
             elapsed,
             duration,
@@ -883,16 +907,16 @@ impl BatchVestingContract {
 
     /// Revoke unvested schedules for multiple (recipient, index) pairs.
     ///
-    /// Requests are processed in descending index order so that swap-with-last
-    /// removal does not corrupt the indices of pending requests that target the
-    /// same recipient (#198).
+    /// Requests MUST be provided pre-sorted in strictly descending order of
+    /// `index` within each recipient.  This is required so that the
+    /// swap-with-last removal strategy does not corrupt the indices of
+    /// subsequent requests targeting the same recipient (#198).
     ///
-    /// #GAS: Sorting uses insertion sort instead of bubble sort.
-    /// Insertion sort performs at most (N-1) comparisons per element and writes
-    /// only the strictly necessary positions, cutting vector `set()` calls by
-    /// ~50 % on average compared to bubble sort.  This lowers instruction-meter
-    /// costs in gas-sensitive Soroban environments while preserving the
-    /// descending-index ordering required for safe swap-with-last removal.
+    /// #308: The previous O(N²) insertion sort is replaced with an O(N)
+    /// validation pass.  Sorting is pushed to the caller (off-chain), which
+    /// keeps on-chain instruction counts well within Soroban's per-transaction
+    /// resource limits for batches up to MAX_BATCH_SIZE (100).  Unsorted input
+    /// is rejected immediately with VestingError::InvalidInput.
     pub fn batch_revoke(env: Env, caller: Address, requests: Vec<RevokeRequest>) -> Vec<bool> {
         Self::panic_if_operation_paused(&env, PAUSE_REVOKE);
         caller.require_auth();
@@ -903,45 +927,32 @@ impl BatchVestingContract {
             return Vec::new(&env);
         }
 
-        let current_time = env.ledger().timestamp();
-
-        // Build a process_order array [0, 1, …, n-1] then sort it in
-        // DESCENDING order of the vesting index of each request.
-        // Insertion sort: O(N²) worst-case but only ≈N²/4 writes on average
-        // (vs ≈3N²/4 writes for bubble sort), significantly cheaper in a
-        // metered environment where each Vec::set() costs gas.
-        let mut process_order: Vec<u32> = Vec::new(&env);
-        for k in 0..n {
-            process_order.push_back(k);
-        }
-        // Insertion sort in descending order of request.index
-        for i in 1..n {
-            let key = process_order.get(i).unwrap();
-            let key_idx = requests.get(key).unwrap().index;
-            let mut j = i;
-            while j > 0 {
-                let prev = process_order.get(j - 1).unwrap();
-                let prev_idx = requests.get(prev).unwrap().index;
-                if prev_idx < key_idx {
-                    // Shift prev one position to the right
-                    process_order.set(j, prev);
-                    j -= 1;
-                } else {
-                    break;
+        // O(N) validation: each request's index must be strictly less than the
+        // previous one (descending order).  We only enforce ordering between
+        // consecutive requests for the same recipient; different recipients are
+        // independent and may appear in any relative order.
+        if n > 1 {
+            for i in 1..n {
+                let prev = requests.get(i - 1).unwrap();
+                let curr = requests.get(i).unwrap();
+                // Only compare when the recipient is the same — different
+                // recipients have independent index spaces.
+                if prev.recipient == curr.recipient && prev.index <= curr.index {
+                    soroban_sdk::panic_with_error!(&env, VestingError::InvalidInput);
                 }
             }
-            process_order.set(j, key);
         }
 
-        // Pre-allocate results in original request order (default false).
+        let current_time = env.ledger().timestamp();
+
+        // Pre-allocate results in caller-provided order (default false).
         let mut results: Vec<bool> = Vec::new(&env);
         for _ in 0..n {
             results.push_back(false);
         }
 
         for k in 0..n {
-            let pos = process_order.get(k).unwrap();
-            let request = requests.get(pos).unwrap();
+            let request = requests.get(k).unwrap();
             let recipient = &request.recipient;
             let index = request.index;
 
@@ -974,6 +985,7 @@ impl BatchVestingContract {
             };
             
             let vested_amount = Self::calculate_vested_amount(
+                &env,
                 vesting.total_amount,
                 elapsed,
                 duration,
@@ -997,7 +1009,7 @@ impl BatchVestingContract {
                 (Symbol::new(&env, "VestingRevoked"), recipient.clone(), sender),
                 (revoked_amount, pending_vested, token, vesting.memo),
             );
-            results.set(pos, true);
+            results.set(k, true);
         }
         results
     }
@@ -1074,6 +1086,7 @@ impl BatchVestingContract {
         let elapsed = (current_time - vesting.start_time) as i128;
 
         let vested_amount = Self::calculate_vested_amount(
+            &env,
             vesting.total_amount,
             elapsed,
             duration,
@@ -1134,6 +1147,7 @@ impl BatchVestingContract {
             let elapsed = (current_time - vesting.start_time) as i128;
 
             let vested_amount = Self::calculate_vested_amount(
+                &env,
                 vesting.total_amount,
                 elapsed,
                 duration,
