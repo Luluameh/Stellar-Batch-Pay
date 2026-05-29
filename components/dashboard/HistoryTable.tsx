@@ -177,7 +177,7 @@ export function HistoryTable({ data, className, page = 1, limit = 20, statusFilt
                     <Button
                       variant="link"
                       className="text-[#00D98B] hover:text-[#00D98B]/80 p-0 h-auto font-medium"
-                      onClick={() => window.open(`/api/batch-status/${batch.jobId}`, "_blank")}
+                      onClick={() => { window.location.href = `/dashboard/history/${batch.jobId}` }}
                     >
                       View Details
                     </Button>
@@ -243,7 +243,7 @@ export function HistoryTable({ data, className, page = 1, limit = 20, statusFilt
                 <Button
                   variant="link"
                   className="text-[#00D98B] hover:text-[#00D98B]/80 p-0 h-auto text-xs font-semibold"
-                  onClick={() => window.open(`/api/batch-status/${batch.jobId}`, "_blank")}
+                  onClick={() => { window.location.href = `/dashboard/history/${batch.jobId}` }}
                 >
                   View Details <ExternalLink className="ml-1 h-3 w-3" />
                 </Button>

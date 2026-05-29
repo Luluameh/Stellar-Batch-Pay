@@ -1,30 +1,65 @@
 "use client"
 
-import { Search, ChevronDown, Calendar, Globe, Info } from "lucide-react"
+import { Search } from "lucide-react"
 import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
-import { 
-  Select, 
-  SelectContent, 
-  SelectItem, 
-  SelectTrigger, 
-  SelectValue 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 
+// #360: filter state is owned by the parent page so the table query
+// and pagination can react to it. Previously each select had only an
+// uncontrolled `defaultValue` and nothing read the user's choices, so
+// the page looked filterable while the underlying API call ignored
+// every change.
+
+export type DateRangeValue = "7days" | "30days" | "90days" | "year"
+export type NetworkValue = "all" | "mainnet" | "testnet"
+export type StatusValue = "all" | "success" | "partial" | "failed"
+
+export interface HistoryFilterValues {
+  search: string
+  dateRange: DateRangeValue
+  network: NetworkValue
+  status: StatusValue
+}
+
 interface HistoryFilterBarProps {
+  values: HistoryFilterValues
+  onChange: (next: HistoryFilterValues) => void
   className?: string
 }
 
-export function HistoryFilterBar({ className }: HistoryFilterBarProps) {
+export const DEFAULT_HISTORY_FILTERS: HistoryFilterValues = {
+  search: "",
+  dateRange: "7days",
+  network: "all",
+  status: "all",
+}
+
+export function HistoryFilterBar({ values, onChange, className }: HistoryFilterBarProps) {
+  const update = <K extends keyof HistoryFilterValues>(
+    key: K,
+    value: HistoryFilterValues[K],
+  ) => onChange({ ...values, [key]: value })
+
   return (
     <div className={cn("grid gap-4 md:grid-cols-2 lg:grid-cols-4 items-end", className)}>
       <div className="space-y-2">
-        <label className="text-sm font-medium text-gray-400">Search Batch</label>
+        <label className="text-sm font-medium text-gray-400" htmlFor="history-search">
+          Search Batch
+        </label>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-          <Input 
-            placeholder="Batch ID or keyword..." 
+          <Input
+            id="history-search"
+            placeholder="Batch ID or keyword..."
+            value={values.search}
+            onChange={(e) => update("search", e.target.value)}
             className="pl-10 bg-[#121827] border-[#1F2937] text-white focus:ring-[#00D98B]/20 focus:border-[#00D98B]"
           />
         </div>
@@ -32,7 +67,10 @@ export function HistoryFilterBar({ className }: HistoryFilterBarProps) {
 
       <div className="space-y-2">
         <label className="text-sm font-medium text-gray-400">Date Range</label>
-        <Select defaultValue="7days">
+        <Select
+          value={values.dateRange}
+          onValueChange={(v) => update("dateRange", v as DateRangeValue)}
+        >
           <SelectTrigger className="bg-[#121827] border-[#1F2937] text-white focus:ring-[#00D98B]/20">
             <SelectValue placeholder="Select Range" />
           </SelectTrigger>
@@ -47,7 +85,10 @@ export function HistoryFilterBar({ className }: HistoryFilterBarProps) {
 
       <div className="space-y-2">
         <label className="text-sm font-medium text-gray-400">Network</label>
-        <Select defaultValue="all">
+        <Select
+          value={values.network}
+          onValueChange={(v) => update("network", v as NetworkValue)}
+        >
           <SelectTrigger className="bg-[#121827] border-[#1F2937] text-white focus:ring-[#00D98B]/20">
             <SelectValue placeholder="All Networks" />
           </SelectTrigger>
@@ -61,7 +102,10 @@ export function HistoryFilterBar({ className }: HistoryFilterBarProps) {
 
       <div className="space-y-2">
         <label className="text-sm font-medium text-gray-400">Status</label>
-        <Select defaultValue="all">
+        <Select
+          value={values.status}
+          onValueChange={(v) => update("status", v as StatusValue)}
+        >
           <SelectTrigger className="bg-[#121827] border-[#1F2937] text-white focus:ring-[#00D98B]/20">
             <SelectValue placeholder="All Status" />
           </SelectTrigger>
