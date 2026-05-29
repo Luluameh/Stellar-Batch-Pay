@@ -23,13 +23,19 @@
 
 import Database from "better-sqlite3";
 import path from "path";
-import type { JobState, JobStatus, PaymentInstruction, BatchResult } from "./stellar/types";
+import type {
+  JobState,
+  JobStatus,
+  PaymentInstruction,
+  BatchResult,
+} from "./stellar/types";
 
 // ---------------------------------------------------------------------------
 // DB initialisation
 // ---------------------------------------------------------------------------
 
-const DB_PATH = process.env.JOB_STORE_PATH ?? path.join(process.cwd(), "data", "jobs.db");
+const DB_PATH =
+  process.env.JOB_STORE_PATH ?? path.join(process.cwd(), "data", "jobs.db");
 
 let _db: Database.Database | null = null;
 
@@ -65,8 +71,10 @@ function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_jobs_createdAt ON jobs (createdAt DESC);
   `);
 
-  const columns = _db.prepare(`PRAGMA table_info(jobs)`).all() as Array<{ name: string }>;
-  if (!columns.some((column) => column.name === 'signedTransactions')) {
+  const columns = _db.prepare(`PRAGMA table_info(jobs)`).all() as Array<{
+    name: string;
+  }>;
+  if (!columns.some((column) => column.name === "signedTransactions")) {
     _db.prepare(`ALTER TABLE jobs ADD COLUMN signedTransactions TEXT`).run();
   }
 
@@ -92,21 +100,32 @@ interface JobRow {
 }
 
 function rowToJobState(row: JobRow): JobState {
-  return {
-    jobId: row.jobId,
-    status: row.status,
-    totalBatches: row.totalBatches,
-    completedBatches: row.completedBatches,
-    payments: JSON.parse(row.payments) as PaymentInstruction[],
-    signedTransactions: row.signedTransactions
-      ? (JSON.parse(row.signedTransactions) as string[])
-      : undefined,
-    network: row.network,
-    result: row.result ? (JSON.parse(row.result) as BatchResult) : undefined,
-    error: row.error ?? undefined,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  };
+  try {
+    return {
+      jobId: row.jobId,
+      status: row.status,
+      totalBatches: row.totalBatches,
+      completedBatches: row.completedBatches,
+      payments: JSON.parse(row.payments) as PaymentInstruction[],
+      signedTransactions: row.signedTransactions
+        ? (JSON.parse(row.signedTransactions) as string[])
+        : undefined,
+      network: row.network,
+      result: row.result ? (JSON.parse(row.result) as BatchResult) : undefined,
+      error: row.error ?? undefined,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  } catch (err) {
+    const parseError = err instanceof Error ? err.message : String(err);
+    console.error(
+      `Failed to parse job state for jobId ${row.jobId}: ${parseError}`,
+    );
+    throw new Error(
+      `Corrupted job data for ${row.jobId}: ${parseError}. ` +
+        `This may indicate a database corruption issue.`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -126,10 +145,12 @@ export function createJob(
   const jobId = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO jobs (jobId, status, totalBatches, completedBatches, payments, signedTransactions, network, createdAt, updatedAt)
     VALUES (?, 'queued', 0, 0, ?, ?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     jobId,
     JSON.stringify(payments),
     signedTransactions ? JSON.stringify(signedTransactions) : null,
@@ -146,7 +167,9 @@ export function createJob(
  */
 export function getJob(jobId: string): JobState | undefined {
   const db = getDb();
-  const row = db.prepare("SELECT * FROM jobs WHERE jobId = ?").get(jobId) as JobRow | undefined;
+  const row = db.prepare("SELECT * FROM jobs WHERE jobId = ?").get(jobId) as
+    | JobRow
+    | undefined;
   return row ? rowToJobState(row) : undefined;
 }
 
@@ -158,12 +181,15 @@ export function updateJob(
   patch: Partial<Omit<JobState, "jobId" | "createdAt">>,
 ): void {
   const db = getDb();
-  const row = db.prepare("SELECT * FROM jobs WHERE jobId = ?").get(jobId) as JobRow | undefined;
+  const row = db.prepare("SELECT * FROM jobs WHERE jobId = ?").get(jobId) as
+    | JobRow
+    | undefined;
   if (!row) return;
 
   const now = new Date().toISOString();
 
-  db.prepare(`
+  db.prepare(
+    `
     UPDATE jobs SET
       status           = ?,
       totalBatches     = ?,
@@ -172,7 +198,8 @@ export function updateJob(
       error            = ?,
       updatedAt        = ?
     WHERE jobId = ?
-  `).run(
+  `,
+  ).run(
     patch.status ?? row.status,
     patch.totalBatches ?? row.totalBatches,
     patch.completedBatches ?? row.completedBatches,
@@ -214,7 +241,9 @@ export function getAllJobs(opts?: {
   params.push(limit, offset);
 
   const rows = db
-    .prepare(`SELECT * FROM jobs ${where} ORDER BY createdAt DESC LIMIT ? OFFSET ?`)
+    .prepare(
+      `SELECT * FROM jobs ${where} ORDER BY createdAt DESC LIMIT ? OFFSET ?`,
+    )
     .all(...params) as JobRow[];
 
   return rows.map(rowToJobState);
@@ -242,6 +271,8 @@ export function countJobs(opts?: {
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const row = db.prepare(`SELECT COUNT(*) as cnt FROM jobs ${where}`).get(...params) as { cnt: number };
+  const row = db
+    .prepare(`SELECT COUNT(*) as cnt FROM jobs ${where}`)
+    .get(...params) as { cnt: number };
   return row.cnt;
 }

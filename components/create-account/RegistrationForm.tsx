@@ -220,7 +220,7 @@ export default function RegistrationForm() {
       <p className="text-center text-sm text-gray-400">
         Already have an account?{" "}
         <a
-          href="/login"
+          href="/sign-in"
           className="text-white font-semibold hover:text-[#00d4a0] transition-colors"
         >
           Sign In
