@@ -7,6 +7,9 @@
   "author": "",
   "type": "module",
   "main": "index.js",
+  "bin": {
+    "stellar-batch-pay": "./cli/index.js"
+  },
   "directories": {
     "example": "examples",
     "lib": "lib",
@@ -17,7 +20,9 @@
     "dev": "next dev",
     "lint": "next lint",
     "start": "next start",
-    "test": "vitest run tests/"
+    "test": "vitest run tests/",
+    "cli": "tsx cli/index.ts",
+    "cli:smoke": "tsx cli/index.ts --help"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
