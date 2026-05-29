@@ -15,6 +15,7 @@ import {
   type ClaimExportRow,
 } from "@/lib/dashboard/history-export";
 import { downloadReceipt, downloadReceiptCsv } from "@/lib/receipt-generator";
+import { escapeHtml } from "@/lib/utils";
 
 function downloadCsv(filename: string, csv: string) {
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -26,13 +27,7 @@ function downloadCsv(filename: string, csv: string) {
   URL.revokeObjectURL(url);
 }
 
-function escapeHtml(input: string): string {
-  return input
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
+// escapeHtml is imported from @/lib/utils (see issue #347)
 
 function toPrintableHtml(rows: ClaimExportRow[], walletAddress: string, fromDate: string, toDate: string) {
   const rangeLabel = fromDate || toDate ? `${fromDate || "Any"} to ${toDate || "Any"}` : "All dates";

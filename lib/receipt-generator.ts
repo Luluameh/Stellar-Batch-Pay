@@ -1,4 +1,5 @@
 import type { BatchResult } from "@/lib/stellar/types";
+import { escapeHtml } from "@/lib/utils";
 
 interface ReceiptData {
   batchResult: BatchResult;
@@ -83,7 +84,7 @@ export function generateReceiptHtml(batchResult: BatchResult): string {
       <div class="grid">
         <div class="field">
           <label>Network</label>
-          <value>${batchResult.network}</value>
+          <value>${escapeHtml(String(batchResult.network))}</value>
         </div>
         <div class="field">
           <label>Timestamp</label>
@@ -117,11 +118,11 @@ export function generateReceiptHtml(batchResult: BatchResult): string {
           ${batchResult.results.map((payment, idx) => `
             <tr>
               <td>${idx + 1}</td>
-              <td><code style="font-size:11px">${payment.recipient}</code></td>
-              <td>${payment.amount}</td>
-              <td>${payment.asset}</td>
-              <td class="${payment.status}">${payment.status}</td>
-              <td><code style="font-size:10px">${payment.transactionHash || "N/A"}</code></td>
+              <td><code style="font-size:11px">${escapeHtml(String(payment.recipient))}</code></td>
+              <td>${escapeHtml(String(payment.amount))}</td>
+              <td>${escapeHtml(String(payment.asset))}</td>
+              <td class="${escapeHtml(String(payment.status))}">${escapeHtml(String(payment.status))}</td>
+              <td><code style="font-size:10px">${escapeHtml(String(payment.transactionHash || "N/A"))}</code></td>
             </tr>
           `).join("")}
         </tbody>
@@ -142,9 +143,9 @@ export function generateReceiptHtml(batchResult: BatchResult): string {
         <tbody>
           ${failedPayments.map((payment) => `
             <tr>
-              <td><code style="font-size:11px">${payment.recipient}</code></td>
-              <td>${payment.amount}</td>
-              <td style="color:#ef4444">${payment.error || "Unknown error"}</td>
+              <td><code style="font-size:11px">${escapeHtml(String(payment.recipient))}</code></td>
+              <td>${escapeHtml(String(payment.amount))}</td>
+              <td style="color:#ef4444">${escapeHtml(String(payment.error || "Unknown error"))}</td>
             </tr>
           `).join("")}
         </tbody>
