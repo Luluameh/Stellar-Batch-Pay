@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useCallback, useEffect, useState } from "react";
 import { useStellarWallet, SigningMethod } from "@/hooks/use-stellar-wallet";
 import { Sep7Modal } from "@/components/dashboard/Sep7Modal";
+import { Networks } from "stellar-sdk";
 
 export type SorobanNetwork = "mainnet" | "testnet" | "futurenet";
 
@@ -40,6 +41,18 @@ export function WalletProvider({ children, expectedNetwork = "testnet" }: Wallet
   const [networkMismatch, setNetworkMismatch] = useState(false);
   const [ledgerError, setLedgerError] = useState<string | null>(null);
 
+  const normalizeDetectedNetwork = useCallback((networkPassphrase: string | null): SorobanNetwork | null => {
+    if (!networkPassphrase) {
+      return wallet.method === "ledger" ? selectedNetwork : null;
+    }
+
+    if (networkPassphrase === Networks.TESTNET) return "testnet";
+    if (networkPassphrase === Networks.PUBLIC) return "mainnet";
+    if (networkPassphrase.toLowerCase().includes("future")) return "futurenet";
+
+    return null;
+  }, [selectedNetwork, wallet.method]);
+
   // Restore network from localStorage on mount
   useEffect(() => {
     const storedNetwork = (localStorage.getItem("wallet_network") as SorobanNetwork) || expectedNetwork;
@@ -49,16 +62,16 @@ export function WalletProvider({ children, expectedNetwork = "testnet" }: Wallet
   // Detect network 
   useEffect(() => {
     if (wallet.publicKey) {
-      // Default to stored network
-      const stored = (localStorage.getItem("wallet_network") as SorobanNetwork) || expectedNetwork;
-      setDetectedNetwork(stored);
-      setNetworkMismatch(stored !== selectedNetwork);
+      const liveNetwork = normalizeDetectedNetwork(wallet.networkPassphrase);
+      setDetectedNetwork(liveNetwork);
+      setNetworkMismatch(liveNetwork !== selectedNetwork);
       localStorage.setItem("wallet_public_key", wallet.publicKey);
     } else {
       setDetectedNetwork(null);
+      setNetworkMismatch(false);
       localStorage.removeItem("wallet_public_key");
     }
-  }, [wallet.publicKey, selectedNetwork, expectedNetwork]);
+  }, [wallet.publicKey, wallet.networkPassphrase, selectedNetwork, expectedNetwork, normalizeDetectedNetwork]);
 
   const handleConnect = useCallback(async () => {
     try {
@@ -91,8 +104,7 @@ export function WalletProvider({ children, expectedNetwork = "testnet" }: Wallet
   const handleSelectNetwork = useCallback((network: SorobanNetwork) => {
     setSelectedNetwork(network);
     localStorage.setItem("wallet_network", network);
-    setNetworkMismatch(network !== detectedNetwork);
-  }, [detectedNetwork]);
+  }, []);
 
   const handleSignTx = useCallback(
     async (xdr: string, network: SorobanNetwork): Promise<string> => {

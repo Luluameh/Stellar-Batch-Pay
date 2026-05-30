@@ -10,14 +10,16 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "crypto";
 import { StrKey } from "stellar-sdk";
 import { validatePaymentInstructions } from "@/lib/stellar";
 import { MAX_UPLOAD_ROWS } from "@/lib/stellar/parser";
 import { safeJsonResponse } from "@/lib/safe-json";
-import { createJob } from "@/lib/job-store";
+import { createIdempotentJob, IdempotencyConflictError } from "@/lib/job-store";
 import { processJobInBackground } from "@/lib/stellar/batch-worker";
 import type { PaymentInstruction } from "@/lib/stellar/types";
 import { applyRateLimit, setRateLimitHeaders } from "@/lib/api-rate-limit";
+import { canonicalizeIdempotencyPayload } from "@/lib/idempotency";
 
 interface RequestBody {
   payments?: PaymentInstruction[];
@@ -25,6 +27,28 @@ interface RequestBody {
   publicKey: string;
   // #300: Support for client-side signed transactions (XDR format)
   signedTransactions?: string[];
+}
+
+type BatchSubmitAcceptedResponse = {
+  jobId: string;
+  status: "queued";
+  totalPayments?: number;
+  totalTransactions?: number;
+  message: string;
+};
+
+function buildIdempotencyKey(body: RequestBody, headerKey: string | null): { idempotencyKey: string; requestHash: string } {
+  const canonicalBody = canonicalizeIdempotencyPayload({
+    payments: body.payments ?? null,
+    network: body.network,
+    publicKey: body.publicKey,
+    signedTransactions: body.signedTransactions ?? null,
+  });
+  const requestHash = createHash("sha256").update(canonicalBody).digest("hex");
+  return {
+    idempotencyKey: headerKey?.trim() || requestHash,
+    requestHash,
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -35,6 +59,10 @@ export async function POST(request: NextRequest) {
     // Parse request body
     const body = (await request.json()) as RequestBody;
     const { payments, signedTransactions, network, publicKey } = body;
+    const { idempotencyKey, requestHash } = buildIdempotencyKey(
+      body,
+      request.headers.get("Idempotency-Key"),
+    );
 
     if (!publicKey || typeof publicKey !== "string") {
       return NextResponse.json(
@@ -75,13 +103,14 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Create a job for pre-signed transactions
-      // signedTransactions are passed as-is without needing a secret key
-      const jobId = createJob([], network, publicKey, signedTransactions);
-      void processJobInBackground(jobId, [], network, undefined, signedTransactions);
-
-      return setRateLimitHeaders(safeJsonResponse(
-        {
+      const outcome = createIdempotentJob<BatchSubmitAcceptedResponse>({
+        idempotencyKey,
+        requestHash,
+        payments: [],
+        network,
+        publicKey,
+        signedTransactions,
+        buildResponseBody: (jobId) => ({
           jobId,
           status: "queued",
           totalTransactions: signedTransactions.length,
@@ -89,9 +118,16 @@ export async function POST(request: NextRequest) {
             "Pre-signed batch queued for processing. Poll /api/batch-status/" +
             jobId +
             " for progress.",
-        },
-        { status: 202 },
-      ), rate);
+        }),
+      });
+
+      if (outcome.replayed) {
+        return setRateLimitHeaders(safeJsonResponse(outcome.responseBody, { status: 202 }), rate);
+      }
+
+      void processJobInBackground(outcome.jobId, [], network, undefined, signedTransactions);
+
+      return setRateLimitHeaders(safeJsonResponse(outcome.responseBody, { status: 202 }), rate);
     }
 
     // Mode 2: Server-side signing (legacy, requires STELLAR_SECRET_KEY)
@@ -149,15 +185,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create a job in the store — returns a UUID immediately
-    const jobId = createJob(payments, network, publicKey);
-
-    // Fire-and-forget: start background processing without awaiting
-    void processJobInBackground(jobId, payments, network, secretKey);
-
-    // Return 202 Accepted with the job ID for polling
-    return setRateLimitHeaders(safeJsonResponse(
-      {
+    const outcome = createIdempotentJob<BatchSubmitAcceptedResponse>({
+      idempotencyKey,
+      requestHash,
+      payments,
+      network,
+      publicKey,
+      buildResponseBody: (jobId) => ({
         jobId,
         status: "queued",
         totalPayments: payments.length,
@@ -165,10 +199,26 @@ export async function POST(request: NextRequest) {
           "Batch queued for processing. Poll /api/batch-status/" +
           jobId +
           " for progress.",
-      },
-      { status: 202 },
-    ), rate);
+      }),
+    });
+
+    if (outcome.replayed) {
+      return setRateLimitHeaders(safeJsonResponse(outcome.responseBody, { status: 202 }), rate);
+    }
+
+    // Fire-and-forget: start background processing without awaiting
+    void processJobInBackground(outcome.jobId, payments, network, secretKey);
+
+    // Return 202 Accepted with the job ID for polling
+    return setRateLimitHeaders(safeJsonResponse(outcome.responseBody, { status: 202 }), rate);
   } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      return setRateLimitHeaders(safeJsonResponse(
+        { error: error.message },
+        { status: 409 },
+      ), rate);
+    }
+
     console.error("Batch submission error:", error);
     return setRateLimitHeaders(safeJsonResponse(
       {

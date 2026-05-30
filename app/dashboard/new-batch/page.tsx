@@ -27,6 +27,31 @@ import { CheckCircle2 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { BatchErrorBoundary } from "@/components/BatchErrorBoundary";
+import { canonicalizeIdempotencyPayload } from "@/lib/idempotency";
+
+async function buildBatchSubmitIdempotencyKey(body: {
+  payments?: PaymentInstruction[];
+  network: "testnet" | "mainnet";
+  publicKey: string;
+}) {
+  const canonicalBody = canonicalizeIdempotencyPayload({
+    payments: body.payments ?? null,
+    network: body.network,
+    publicKey: body.publicKey,
+  });
+
+  const webCrypto = globalThis.crypto;
+
+  if (!webCrypto?.subtle) {
+    return webCrypto?.randomUUID() ?? `${Date.now()}-${Math.random()}`;
+  }
+
+  const encoded = new TextEncoder().encode(canonicalBody);
+  const digest = await webCrypto.subtle.digest("SHA-256", encoded);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 export default function NewBatchPaymentPage() {
   const [step, setStep] = useState(1);
@@ -538,7 +563,14 @@ export default function NewBatchPaymentPage() {
                 try {
                   const response = await fetch('/api/batch-submit', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Idempotency-Key': await buildBatchSubmitIdempotencyKey({
+                        payments: filteredPayments,
+                        network: selectedNetwork,
+                        publicKey,
+                      }),
+                    },
                     body: JSON.stringify({
                       payments: filteredPayments,
                       network: selectedNetwork,
