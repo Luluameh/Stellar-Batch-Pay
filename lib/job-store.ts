@@ -71,6 +71,13 @@ function getDb(): Database.Database {
 
     -- Index for history queries ordered by creation time
     CREATE INDEX IF NOT EXISTS idx_jobs_createdAt ON jobs (createdAt DESC);
+
+    -- Idempotency key store: maps client-generated UUIDs to jobIds (24 h TTL).
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+      key       TEXT PRIMARY KEY,
+      jobId     TEXT NOT NULL,
+      createdAt TEXT NOT NULL
+    );
   `);
 
   const columns = _db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
@@ -243,6 +250,45 @@ export function getAllJobs(opts?: {
     .all(...params) as JobRow[];
 
   return rows.map(rowToJobState);
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency key store
+// ---------------------------------------------------------------------------
+
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Look up the jobId previously stored for the given idempotency key.
+ * Returns undefined when the key is not found or has expired.
+ */
+export function getJobIdByIdempotencyKey(key: string): string | undefined {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT jobId, createdAt FROM idempotency_keys WHERE key = ?")
+    .get(key) as { jobId: string; createdAt: string } | undefined;
+
+  if (!row) return undefined;
+
+  const age = Date.now() - new Date(row.createdAt).getTime();
+  if (age > IDEMPOTENCY_TTL_MS) {
+    db.prepare("DELETE FROM idempotency_keys WHERE key = ?").run(key);
+    return undefined;
+  }
+
+  return row.jobId;
+}
+
+/**
+ * Persist a mapping from idempotency key to jobId.
+ * Silently replaces any existing row with the same key (should never happen
+ * in normal usage since keys are checked before job creation).
+ */
+export function storeIdempotencyKey(key: string, jobId: string): void {
+  const db = getDb();
+  db.prepare(
+    "INSERT OR REPLACE INTO idempotency_keys (key, jobId, createdAt) VALUES (?, ?, ?)",
+  ).run(key, jobId, new Date().toISOString());
 }
 
 /**

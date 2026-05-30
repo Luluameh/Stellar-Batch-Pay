@@ -14,7 +14,7 @@ import { StrKey } from "stellar-sdk";
 import { validatePaymentInstructions } from "@/lib/stellar";
 import { MAX_UPLOAD_ROWS } from "@/lib/stellar/parser";
 import { safeJsonResponse } from "@/lib/safe-json";
-import { createJob } from "@/lib/job-store";
+import { createJob, getJobIdByIdempotencyKey, storeIdempotencyKey } from "@/lib/job-store";
 import { processJobInBackground } from "@/lib/stellar/batch-worker";
 import type { PaymentInstruction } from "@/lib/stellar/types";
 import { applyRateLimit, setRateLimitHeaders } from "@/lib/api-rate-limit";
@@ -25,6 +25,8 @@ interface RequestBody {
   publicKey: string;
   // #300: Support for client-side signed transactions (XDR format)
   signedTransactions?: string[];
+  // Client-generated UUID; prevents duplicate batch creation on retries.
+  idempotencyKey: string;
 }
 
 export async function POST(request: NextRequest) {
@@ -34,7 +36,27 @@ export async function POST(request: NextRequest) {
   try {
     // Parse request body
     const body = (await request.json()) as RequestBody;
-    const { payments, signedTransactions, network, publicKey } = body;
+    const { payments, signedTransactions, network, publicKey, idempotencyKey } = body;
+
+    if (!idempotencyKey || typeof idempotencyKey !== "string" || !idempotencyKey.trim()) {
+      return NextResponse.json(
+        { error: "idempotencyKey is required. Generate a UUID on the client and include it in every submission request." },
+        { status: 400 },
+      );
+    }
+
+    // Return the original response if this key was already processed within 24 h.
+    const existingJobId = getJobIdByIdempotencyKey(idempotencyKey);
+    if (existingJobId) {
+      return setRateLimitHeaders(safeJsonResponse(
+        {
+          jobId: existingJobId,
+          status: "queued",
+          message: "Duplicate idempotency key — returning existing job.",
+        },
+        { status: 202 },
+      ), rate);
+    }
 
     if (!publicKey || typeof publicKey !== "string") {
       return NextResponse.json(
@@ -78,6 +100,7 @@ export async function POST(request: NextRequest) {
       // Create a job for pre-signed transactions
       // signedTransactions are passed as-is without needing a secret key
       const jobId = createJob([], network, publicKey, signedTransactions);
+      storeIdempotencyKey(idempotencyKey, jobId);
       void processJobInBackground(jobId, [], network, undefined, signedTransactions);
 
       return setRateLimitHeaders(safeJsonResponse(
@@ -151,6 +174,7 @@ export async function POST(request: NextRequest) {
 
     // Create a job in the store — returns a UUID immediately
     const jobId = createJob(payments, network, publicKey);
+    storeIdempotencyKey(idempotencyKey, jobId);
 
     // Fire-and-forget: start background processing without awaiting
     void processJobInBackground(jobId, payments, network, secretKey);
