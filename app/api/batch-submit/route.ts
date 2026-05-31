@@ -27,6 +27,8 @@ interface RequestBody {
   publicKey: string;
   // #300: Support for client-side signed transactions (XDR format)
   signedTransactions?: string[];
+  // Client-generated UUID; prevents duplicate batch creation on retries.
+  idempotencyKey: string;
 }
 
 type BatchSubmitAcceptedResponse = {

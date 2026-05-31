@@ -89,10 +89,12 @@ Secret keys come from environment variables, never from configuration files. Thi
 
 If you need special handling for a specific asset:
 
-1. Update `batcher.ts` parseAsset() function
+1. Update `parseAsset()` in `lib/stellar/utils.ts` — this is the **single shared parser** used by both `batcher.ts` and `server.ts`
 2. Add validation in `validator.ts`
 3. Update type definitions in `types.ts`
 4. Add tests in `tests/`
+
+> **Important — server-side signing:** `StellarService` in `server.ts` (used by `/api/batch-submit` with `STELLAR_SECRET_KEY`) builds payment operations by calling `parseAsset` from `lib/stellar/utils.ts`. This shared parser handles `"XLM"`, `"native"`, and `"CODE:ISSUER"` strings. Do **not** introduce a local `parseAsset` in `server.ts`; doing so will break issued-asset batches (USDC, etc.) on the server-submit path.
 
 ### Adding Rate Limiting
 

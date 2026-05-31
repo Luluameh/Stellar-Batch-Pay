@@ -27,22 +27,8 @@ import {
 } from "./validator";
 import { getRecommendedFee } from "./fee-service";
 import Big from "big.js";
-import { parseStellarAmount, formatStellarAmount } from "./utils";
-
-/**
- * Utility to parse asset input into a StellarAsset instance
- */
-export function parseAsset(asset: any): StellarAsset {
-  if (asset === "XLM" || asset === "native") {
-    return StellarAsset.native();
-  }
-
-  if (!asset.code || !asset.issuer) {
-    throw new Error("Invalid asset: must provide code and issuer");
-  }
-
-  return new StellarAsset(asset.code, asset.issuer);
-}
+import { parseStellarAmount, formatStellarAmount, parseAsset } from "./utils";
+export { parseAsset };
 
 export class StellarService {
   private keypair: Keypair;

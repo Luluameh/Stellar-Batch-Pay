@@ -4,7 +4,6 @@
 
 import {
   Account,
-  Asset as StellarAsset,
   Memo,
   Networks,
   Operation,
@@ -68,11 +67,7 @@ export async function simulateBatchTransactionSize(
     }).addMemo(Memo.text("batch-size-check"));
 
     for (const payment of payments) {
-      const asset = parseAsset(payment.asset);
-      const stellarAsset =
-        asset.issuer === null
-          ? StellarAsset.native()
-          : new StellarAsset(asset.code, asset.issuer);
+      const stellarAsset = parseAsset(payment.asset);
 
       builder = builder.addOperation(
         Operation.payment({
@@ -123,11 +118,7 @@ export function estimateBatchTransactionSize(
   }).addMemo(Memo.text("batch-size-check"));
 
   for (const payment of payments) {
-    const asset = parseAsset(payment.asset);
-    const stellarAsset =
-      asset.issuer === null
-        ? StellarAsset.native()
-        : new StellarAsset(asset.code, asset.issuer);
+    const stellarAsset = parseAsset(payment.asset);
 
     builder = builder.addOperation(
       Operation.payment({
