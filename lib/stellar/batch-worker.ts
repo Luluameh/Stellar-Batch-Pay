@@ -13,6 +13,7 @@ import { createBatches } from "./batcher";
 import type { PaymentInstruction, BatchResult, PaymentResult } from "./types";
 import { Horizon, TransactionBuilder } from "stellar-sdk";
 import { sumStellarAmounts, formatStellarAmount } from "./utils";
+import { horizonUrl } from "./network-config";
 
 /**
  * Process a batch job in the background. This function must NOT be awaited
@@ -40,10 +41,7 @@ export async function processJobInBackground(
     }
 
     // Create server instance for fee fetching
-    const serverUrl = network === 'testnet'
-      ? 'https://horizon-testnet.stellar.org'
-      : 'https://horizon.stellar.org';
-    const server = new Horizon.Server(serverUrl);
+    const server = new Horizon.Server(horizonUrl(network));
 
     // #300: Handle pre-signed transactions (client-side signing)
     if (xdrs && xdrs.length > 0) {

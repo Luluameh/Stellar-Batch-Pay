@@ -12,6 +12,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { Horizon } from "stellar-sdk";
+import { horizonUrl } from "@/lib/stellar/network-config";
+import { applyRateLimit, setRateLimitHeaders } from "@/lib/api-rate-limit";
 
 type TimeRange = "7d" | "30d" | "90d";
 
@@ -28,6 +30,9 @@ function rangeToDays(range: TimeRange | null): number | null {
 }
 
 export async function GET(request: NextRequest) {
+  const rateLimit = applyRateLimit(request, "dashboard-metrics");
+  if (rateLimit.blocked) return rateLimit.response!;
+
   const { searchParams } = request.nextUrl;
   const publicKey = searchParams.get("publicKey");
   const network = searchParams.get("network");
@@ -54,11 +59,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const serverUrl =
-    network === "testnet"
-      ? "https://horizon-testnet.stellar.org"
-      : "https://horizon.stellar.org";
-  const server = new Horizon.Server(serverUrl);
+  const server = new Horizon.Server(horizonUrl(network));
 
   try {
     // Get account operations (limit to recent 200 for performance)
@@ -177,20 +178,23 @@ export async function GET(request: NextRequest) {
       }));
     }
 
-    return NextResponse.json({
-      totalPayments,
-      totalAmountSent: totalAmountDisplay,
-      successRate: successRate.toFixed(1) + "%",
-      activeBatches,
-      totalPaymentsTrend: formatTrend(currentWindowPayments, previousWindowPayments),
-      totalAmountSentTrend: formatTrend(currentWindowAmount, previousWindowAmount),
-      successRateTrend: formatTrend(
-        rate(currentWindowSuccessful, currentWindowPayments),
-        rate(previousWindowSuccessful, previousWindowPayments),
-        "pp",
-      ),
-      activeBatchesTrend: recentPayments > 0 ? "Last 24h" : "No active batches",
-    });
+    return setRateLimitHeaders(
+      NextResponse.json({
+        totalPayments,
+        totalAmountSent: totalAmountDisplay,
+        successRate: successRate.toFixed(1) + "%",
+        activeBatches,
+        totalPaymentsTrend: formatTrend(currentWindowPayments, previousWindowPayments),
+        totalAmountSentTrend: formatTrend(currentWindowAmount, previousWindowAmount),
+        successRateTrend: formatTrend(
+          rate(currentWindowSuccessful, currentWindowPayments),
+          rate(previousWindowSuccessful, previousWindowPayments),
+          "pp",
+        ),
+        activeBatchesTrend: recentPayments > 0 ? "Last 24h" : "No active batches",
+      }),
+      rateLimit,
+    );
   } catch (error) {
     console.error("Error fetching dashboard metrics:", error);
     return NextResponse.json(
