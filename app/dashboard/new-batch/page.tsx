@@ -11,6 +11,7 @@ import { JobProgress } from "@/components/job-progress";
 import { ResultsDisplay } from "@/components/results-display";
 import { useWallet } from "@/contexts/WalletContext";
 import { parsePaymentFile, getBatchSummary } from "@/lib/stellar";
+import { validatePaymentInstructions } from "@/lib/stellar/validator";
 import type {
   ParsedPaymentFile,
   BatchResult,
@@ -49,6 +50,7 @@ export default function NewBatchPaymentPage() {
   const [completedBatches, setCompletedBatches] = useState(0);
   const [totalBatches, setTotalBatches] = useState(0);
   const [manualPayments, setManualPayments] = useState<PaymentInstruction[]>([]);
+  const [manualCanContinue, setManualCanContinue] = useState(false);
   const [entryMode, setEntryMode] = useState<"upload" | "manual">("upload");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -231,6 +233,27 @@ export default function NewBatchPaymentPage() {
     { id: 4, name: "Submit" },
   ];
 
+  const canNavigateToStep = (targetStep: number): boolean => {
+    if (targetStep === 1) return true;
+    if (targetStep <= step) return true;
+    if (targetStep === 2) return Boolean(validationResult && summary);
+    if (targetStep === 3) {
+      return Boolean(
+        validationResult &&
+          summary &&
+          summary.validCount > 0 &&
+          batchMeta,
+      );
+    }
+    if (targetStep === 4) return Boolean(result);
+    return false;
+  };
+
+  const handleStepClick = (targetStep: number) => {
+    if (!canNavigateToStep(targetStep)) return;
+    setStep(targetStep);
+  };
+
   const handleFileSelect = async (selectedFile: File, format: "json" | "csv") => {
     setFile(selectedFile);
     setFileFormat(format);
@@ -260,6 +283,13 @@ export default function NewBatchPaymentPage() {
   const handleManualContinue = () => {
     if (manualPayments.length === 0) {
       toast.error("Please add at least one recipient");
+      return;
+    }
+
+    const validation = validatePaymentInstructions(manualPayments);
+    if (!validation.valid) {
+      const firstError = validation.errors.values().next().value;
+      toast.error(firstError ?? "Please fix invalid recipient rows before continuing");
       return;
     }
 
@@ -315,8 +345,11 @@ export default function NewBatchPaymentPage() {
             {steps.map((s) => (
               <div key={s.id} className="flex flex-col items-center gap-2 bg-[#0B0F1A] px-2 md:px-4">
                 <button
-                  disabled={step < s.id && (s.id > 1 && (!validationResult || !summary))}
-                  onClick={() => setStep(s.id)}
+                  type="button"
+                  aria-label={`Step ${s.id}: ${s.name}`}
+                  aria-current={step === s.id ? "step" : undefined}
+                  disabled={!canNavigateToStep(s.id)}
+                  onClick={() => handleStepClick(s.id)}
                   className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm transition-colors border-2 outline-hidden disabled:cursor-not-allowed ${step > s.id
                       ? "bg-emerald-500 border-emerald-500 text-white cursor-pointer hover:bg-emerald-600"
                       : step === s.id
@@ -395,13 +428,17 @@ export default function NewBatchPaymentPage() {
                       <CardTitle className="text-xl text-white">Manual Recipient Entry</CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <ManualBatchEntry initialPayments={manualPayments} onPaymentsChange={setManualPayments} />
+                      <ManualBatchEntry
+                        initialPayments={manualPayments}
+                        onPaymentsChange={setManualPayments}
+                        onCanContinueChange={setManualCanContinue}
+                      />
                     </CardContent>
                   </Card>
                   <div className="flex justify-end pt-4">
                     <Button
                       onClick={handleManualContinue}
-                      disabled={manualPayments.length === 0}
+                      disabled={!manualCanContinue}
                       className="bg-emerald-500 hover:bg-emerald-600 text-white w-full sm:w-auto px-8"
                     >
                       Continue to Validation
