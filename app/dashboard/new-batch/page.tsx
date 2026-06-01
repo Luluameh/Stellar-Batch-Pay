@@ -10,7 +10,7 @@ import { motionCssDuration, stepEnter } from "@/lib/motion-tokens";
 import { BatchDryRun } from "@/components/dashboard/BatchDryRun";
 import { CsvValidationErrors } from "@/components/csv-validation-errors";
 import { JobProgress } from "@/components/job-progress";
-// import { ResultsDisplay } from "@/components/results-display";
+import { ResultsDisplay } from "@/components/results-display";
 import { useWallet } from "@/contexts/WalletContext";
 import { parsePaymentFile, getBatchSummary } from "@/lib/stellar";
 import { validatePaymentInstructions } from "@/lib/stellar/validator";
@@ -35,11 +35,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ManualBatchEntry } from "@/components/dashboard/ManualBatchEntry";
 import { analyzeParsedPayments } from "@/lib/stellar/parser";
 import { BatchReview } from "@/components/dashboard/BatchReview";
-import { CheckCircle2 } from "lucide-react";
+
 import Link from "next/link";
 import { toast } from "sonner";
 import { BatchErrorBoundary } from "@/components/BatchErrorBoundary";
 import { canonicalizeIdempotencyPayload } from "@/lib/idempotency";
+
+import { BatchFlowProvider, useBatchFlow } from "@/contexts/BatchFlowContext";
+import { t } from "@/lib/i18n";
 
 async function buildBatchSubmitIdempotencyKey(body: {
   payments?: PaymentInstruction[];
@@ -65,7 +68,35 @@ async function buildBatchSubmitIdempotencyKey(body: {
     .join("");
 }
 
-import { BatchFlowProvider, useBatchFlow } from "@/contexts/BatchFlowContext";
+export default function NewBatchPaymentPage() {
+  const [step, setStep] = useState(1);
+  const [selectedNetwork, setSelectedNetwork] = useState<"testnet" | "mainnet">(
+    "testnet",
+  );
+  const [file, setFile] = useState<File | null>(null);
+  const [fileFormat, setFileFormat] = useState<"json" | "csv" | null>(null);
+  const [validationResult, setValidationResult] =
+    useState<ParsedPaymentFile | null>(null);
+  const [validationError, setValidationError] = useState("");
+  const [summary, setSummary] = useState<{
+    recipientCount: number;
+    validCount: number;
+    invalidCount: number;
+    totalAmount: string;
+    assetBreakdown: Record<string, number>;
+  } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [result, setResult] = useState<BatchResult | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<JobStatus>("queued");
+  const [completedBatches, setCompletedBatches] = useState(0);
+  const [totalBatches, setTotalBatches] = useState(0);
+  const [manualPayments, setManualPayments] = useState<PaymentInstruction[]>(
+    [],
+  );
+  const [entryMode, setEntryMode] = useState<"upload" | "manual">("upload");
+  const [manualCanContinue, setManualCanContinue] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
 export function NewBatchPaymentPageContent() {
   const {
@@ -113,15 +144,30 @@ export function NewBatchPaymentPageContent() {
 
   // STEP DEFINITIONS
   const steps = [
-    { id: 1, name: "Upload File" },
-    { id: 2, name: "Validate" },
-    { id: 3, name: "Review" },
-    { id: 4, name: "Submit" },
+    { id: 1, name: t("newBatch.stepUpload") },
+    { id: 2, name: t("newBatch.stepValidate") },
+    { id: 3, name: t("newBatch.stepReview") },
+    { id: 4, name: t("newBatch.stepSubmit") },
   ];
 
   const estimatedFees = summary
     ? (summary.validCount * 0.0001).toFixed(4)
     : "0.0000";
+
+  const canNavigateToStep = (targetStep: number): boolean => {
+    if (targetStep === step) return true;
+    if (targetStep === 1) return true;
+    if (targetStep === 2) return step >= 2 && !!validationResult;
+    if (targetStep === 3) return step >= 3 && !!validationResult;
+    if (targetStep === 4) return step >= 4;
+    return false;
+  };
+
+  const handleStepClick = (targetStep: number) => {
+    if (canNavigateToStep(targetStep)) {
+      setStep(targetStep);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -131,16 +177,16 @@ export function NewBatchPaymentPageContent() {
           Dashboard
         </Link>
         <span className="text-slate-600">›</span>
-        <span className="text-emerald-500">New Batch Payment</span>
+        <span className="text-emerald-500">{t("newBatch.title")}</span>
       </div>
 
       {/* Page Title */}
       <div>
         <h1 className="text-3xl font-bold text-white mb-2">
-          New Batch Payment
+          {t("newBatch.title")}
         </h1>
         <p className="text-slate-400">
-          Upload a payment file and send multiple crypto transactions securely.
+          {t("newBatch.description")}
         </p>
       </div>
 
@@ -207,14 +253,14 @@ export function NewBatchPaymentPageContent() {
                     className="data-[state=active]:bg-emerald-500 data-[state=active]:text-white"
                   >
                     <FileUp className="w-4 h-4 mr-2" />
-                    File Upload
+                    {t("newBatch.fileUpload")}
                   </TabsTrigger>
                   <TabsTrigger
                     value="manual"
                     className="data-[state=active]:bg-emerald-500 data-[state=active]:text-white"
                   >
                     <UserPlus className="w-4 h-4 mr-2" />
-                    Manual Entry
+                    {t("newBatch.manualEntry")}
                   </TabsTrigger>
                 </TabsList>
 
@@ -222,7 +268,7 @@ export function NewBatchPaymentPageContent() {
                   <Card className="bg-slate-900/50 border-slate-800">
                     <CardHeader>
                       <CardTitle className="text-xl text-white">
-                        Upload Payment File
+                        {t("newBatch.uploadPaymentFile")}
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
@@ -254,7 +300,7 @@ export function NewBatchPaymentPageContent() {
                       disabled={!validationResult || !summary}
                       className="bg-emerald-500 hover:bg-emerald-600 text-white w-full sm:w-auto px-8"
                     >
-                      Continue to Validation
+                      {t("newBatch.continueToValidation")}
                     </Button>
                   </div>
                 </TabsContent>
@@ -263,7 +309,7 @@ export function NewBatchPaymentPageContent() {
                   <Card className="bg-slate-900/50 border-slate-800">
                     <CardHeader>
                       <CardTitle className="text-xl text-white">
-                        Manual Recipient Entry
+                        {t("newBatch.manualRecipientEntry")}
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
@@ -279,7 +325,7 @@ export function NewBatchPaymentPageContent() {
                       disabled={manualPayments.length === 0}
                       className="bg-emerald-500 hover:bg-emerald-600 text-white w-full sm:w-auto px-8"
                     >
-                      Continue to Validation
+                      {t("newBatch.continueToValidation")}
                     </Button>
                   </div>
                 </TabsContent>
@@ -291,26 +337,26 @@ export function NewBatchPaymentPageContent() {
                 <CardHeader>
                   <div className="flex items-center gap-2">
                     <Lightbulb className="w-5 h-5 text-yellow-500" />
-                    <CardTitle className="text-lg text-white">Tips</CardTitle>
+                    <CardTitle className="text-lg text-white">{t("newBatch.tipsTitle")}</CardTitle>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <div className="flex items-start gap-2 text-sm">
                     <Check className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
                     <p className="text-slate-400">
-                      Use valid Stellar wallet addresses
+                      {t("newBatch.tip1")}
                     </p>
                   </div>
                   <div className="flex items-start gap-2 text-sm">
                     <Check className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
                     <p className="text-slate-400">
-                      Verify amounts and asset types
+                      {t("newBatch.tip2")}
                     </p>
                   </div>
                   <div className="flex items-start gap-2 text-sm">
                     <Check className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
                     <p className="text-slate-400">
-                      Test with small amounts first
+                      {t("newBatch.tip3")}
                     </p>
                   </div>
                   <button className="text-emerald-500 hover:text-emerald-400 text-sm flex items-center gap-1 mt-2">
@@ -331,7 +377,7 @@ export function NewBatchPaymentPageContent() {
                 <Card className="bg-slate-900/50 border-slate-800">
                   <CardHeader>
                     <CardTitle className="text-xl text-white">
-                      Validation Results
+                      {t("newBatch.validationResults")}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
@@ -342,7 +388,7 @@ export function NewBatchPaymentPageContent() {
                         </div>
                         <div>
                           <div className="text-sm font-medium text-white">
-                            Valid Recipients
+                            {t("newBatch.validRecipients")}
                           </div>
                           <div className="text-2xl font-bold text-emerald-500">
                             {summary.validCount}
@@ -356,7 +402,7 @@ export function NewBatchPaymentPageContent() {
                           </div>
                           <div>
                             <div className="text-sm font-medium text-white">
-                              Invalid Rows
+                              {t("newBatch.invalidRows")}
                             </div>
                             <div className="text-2xl font-bold text-red-500">
                               {summary.invalidCount}
@@ -369,7 +415,7 @@ export function NewBatchPaymentPageContent() {
                     <div className="grid grid-cols-2 gap-4">
                       <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg">
                         <div className="text-xs text-slate-500 uppercase font-bold mb-1">
-                          Total Amount
+                          {t("newBatch.totalAmount")}
                         </div>
                         <div className="text-xl font-bold text-white">
                           {summary.totalAmount} XLM
@@ -377,7 +423,7 @@ export function NewBatchPaymentPageContent() {
                       </div>
                       <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg">
                         <div className="text-xs text-slate-500 uppercase font-bold mb-1">
-                          Est. Fees
+                          {t("newBatch.estFees")}
                         </div>
                         <div className="text-xl font-bold text-white">
                           {estimatedFees} XLM
@@ -390,9 +436,9 @@ export function NewBatchPaymentPageContent() {
               <div className="space-y-4">
                 <Card className="bg-slate-900/50 border-slate-800">
                   <CardHeader>
-                    <CardTitle className="text-lg text-white">
-                      Continue
-                    </CardTitle>
+                <CardTitle className="text-lg text-white">
+                  {t("common.next")}
+                </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <p className="text-sm text-slate-400">
@@ -408,8 +454,8 @@ export function NewBatchPaymentPageContent() {
                       disabled={summary.validCount === 0 || batchMetaLoading}
                     >
                       {batchMetaLoading
-                        ? "Estimating batch size..."
-                        : "Review Batch"}
+                        ? t("newBatch.estimatingBatchSize")
+                        : t("newBatch.reviewBatch")}
                     </Button>
                   </CardContent>
                 </Card>
@@ -440,7 +486,7 @@ export function NewBatchPaymentPageContent() {
             <Card className="bg-slate-900/50 border-slate-800">
               <CardHeader>
                 <CardTitle className="text-lg text-white">
-                  Processing Batch
+                  {t("newBatch.processingBatch")}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -458,38 +504,26 @@ export function NewBatchPaymentPageContent() {
         {/* Step 4: Submit Confirmation */}
         {step === 4 && result && (
           <MotionSafe {...stepEnter} className="space-y-6">
-            <Card className="bg-slate-900/50 border-slate-800">
-              <CardHeader>
-                <CardTitle className="text-lg text-white">
-                  Batch Submitted
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center gap-2 text-emerald-400">
-                  <CheckCircle2 className="w-5 h-5" />
-                  <span>Your batch has been submitted successfully.</span>
-                </div>
-                <div className="text-sm text-slate-400">
-                  Batch ID:{" "}
-                  <span className="font-mono text-white">{result.batchId}</span>
-                </div>
-                <div className="text-sm text-slate-400">
-                  Total Payments: {result.totalRecipients}
-                </div>
-                <div className="pt-4">
-                  <Button
-                    onClick={() => {
-                      sessionStorage.removeItem("new_batch_state");
-                      setStep(1);
-                    }}
-                    variant="outline"
-                    className="border-slate-800 text-slate-300 hover:bg-slate-800"
-                  >
-                    Create New Batch
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+            <ResultsDisplay result={result} />
+            <div className="flex flex-wrap gap-3 pt-4">
+              {jobId && (
+                <Button asChild variant="outline" className="border-slate-800 text-slate-300 hover:bg-slate-800">
+                  <Link href={`/dashboard/history/${jobId}`}>
+                    {t("history.viewDetails")}
+                  </Link>
+                </Button>
+              )}
+              <Button
+                onClick={() => {
+                  sessionStorage.removeItem("new_batch_state");
+                  setStep(1);
+                }}
+                variant="outline"
+                className="border-slate-800 text-slate-300 hover:bg-slate-800"
+              >
+                {t("newBatch.createNewBatch")}
+              </Button>
+            </div>
           </MotionSafe>
         )}
       </BatchErrorBoundary>
