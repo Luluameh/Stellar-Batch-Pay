@@ -11,7 +11,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
-import { StrKey } from "stellar-sdk";
+import { Keypair, StrKey } from "stellar-sdk";
 import { validatePaymentInstructions } from "@/lib/stellar";
 import { MAX_UPLOAD_ROWS } from "@/lib/stellar/parser";
 import { safeJsonResponse } from "@/lib/safe-json";
@@ -20,6 +20,7 @@ import { processJobInBackground } from "@/lib/stellar/batch-worker";
 import type { PaymentInstruction } from "@/lib/stellar/types";
 import { applyRateLimit, setRateLimitHeaders } from "@/lib/api-rate-limit";
 import { canonicalizeIdempotencyPayload } from "@/lib/idempotency";
+import { logger } from "@/lib/logger";
 
 interface RequestBody {
   payments?: PaymentInstruction[];
@@ -57,16 +58,22 @@ export async function POST(request: NextRequest) {
   const rate = applyRateLimit(request, "batch-submit");
   if (rate.blocked) return rate.response!;
 
+  const requestId = request.headers.get("x-request-id");
+
   try {
     // Parse request body
     const body = (await request.json()) as RequestBody;
     const { payments, signedTransactions, network, publicKey } = body;
+    
+    logger.info({ requestId, publicKey, network }, "API batch-submit handler started");
+
     const { idempotencyKey, requestHash } = buildIdempotencyKey(
       body,
       request.headers.get("Idempotency-Key"),
     );
 
     if (!publicKey || typeof publicKey !== "string") {
+      logger.warn({ requestId }, "Missing publicKey in request");
       return NextResponse.json(
         { error: "publicKey is required" },
         { status: 400 },
@@ -74,6 +81,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (!StrKey.isValidEd25519PublicKey(publicKey)) {
+      logger.warn({ requestId, publicKey }, "Invalid Stellar public key checksum provided");
       return NextResponse.json(
         { error: "Invalid Stellar public key checksum" },
         { status: 400 },
@@ -82,6 +90,7 @@ export async function POST(request: NextRequest) {
 
     // Validate network
     if (!["testnet", "mainnet"].includes(network)) {
+      logger.warn({ requestId, network }, "Invalid network provided");
       return NextResponse.json(
         { error: "Invalid network: must be 'testnet' or 'mainnet'" },
         { status: 400 },
@@ -92,6 +101,7 @@ export async function POST(request: NextRequest) {
     // Mode 1: Client-side signed transactions (pre-signed XDRs)
     if (signedTransactions && signedTransactions.length > 0) {
       if (!Array.isArray(signedTransactions)) {
+        logger.warn({ requestId }, "signedTransactions must be an array");
         return NextResponse.json(
           { error: "signedTransactions must be an array of XDR strings" },
           { status: 400 },
@@ -99,6 +109,7 @@ export async function POST(request: NextRequest) {
       }
 
       if (signedTransactions.length > MAX_UPLOAD_ROWS) {
+        logger.warn({ requestId, count: signedTransactions.length }, "signedTransactions exceeds MAX_UPLOAD_ROWS");
         return NextResponse.json(
           { error: `Batch exceeds the maximum of ${MAX_UPLOAD_ROWS} transactions per upload.` },
           { status: 400 },
@@ -124,16 +135,19 @@ export async function POST(request: NextRequest) {
       });
 
       if (outcome.replayed) {
+        logger.info({ requestId, jobId: outcome.jobId, publicKey, network, replayed: true }, "Batch submit job replayed (pre-signed mode)");
         return setRateLimitHeaders(safeJsonResponse(outcome.responseBody, { status: 202 }), rate);
       }
 
-      void processJobInBackground(outcome.jobId, [], network, undefined, signedTransactions);
+      void processJobInBackground(outcome.jobId, [], network, undefined, signedTransactions, requestId || undefined);
 
+      logger.info({ requestId, jobId: outcome.jobId, publicKey, network, replayed: false }, "Batch submit job queued and background worker triggered (pre-signed mode)");
       return setRateLimitHeaders(safeJsonResponse(outcome.responseBody, { status: 202 }), rate);
     }
 
     // Mode 2: Server-side signing (legacy, requires STELLAR_SECRET_KEY)
     if (!payments || payments.length === 0) {
+      logger.warn({ requestId }, "Either payments or signedTransactions must be provided");
       return NextResponse.json(
         { error: "Either 'payments' or 'signedTransactions' must be provided" },
         { status: 400 },
@@ -142,6 +156,7 @@ export async function POST(request: NextRequest) {
 
     const allowServerSigning = process.env.ALLOW_SERVER_SIGNING === "true";
     if (!allowServerSigning) {
+      logger.warn({ requestId }, "Server-side signing is disabled by server configuration");
       return NextResponse.json(
         {
           error:
@@ -154,14 +169,28 @@ export async function POST(request: NextRequest) {
     // Get secret key from environment
     const secretKey = process.env.STELLAR_SECRET_KEY;
     if (!secretKey) {
+      logger.error({ requestId }, "STELLAR_SECRET_KEY is not configured on server");
       return NextResponse.json(
         { error: "STELLAR_SECRET_KEY is not configured. Please configure server-side signing or use client-side signing." },
         { status: 500 },
       );
     }
 
+    const signingPublicKey = Keypair.fromSecret(secretKey).publicKey();
+    if (signingPublicKey !== publicKey) {
+      logger.warn({ requestId, publicKey, signingPublicKey }, "Request publicKey does not match server signing key");
+      return NextResponse.json(
+        {
+          error:
+            "Server-side signing is bound to the configured STELLAR_SECRET_KEY and must match the request publicKey.",
+        },
+        { status: 403 },
+      );
+    }
+
     // Validate input
     if (!Array.isArray(payments) || payments.length === 0) {
+      logger.warn({ requestId }, "payments must be a non-empty array");
       return NextResponse.json(
         { error: "Invalid request: payments must be a non-empty array" },
         { status: 400 },
@@ -169,6 +198,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (payments.length > MAX_UPLOAD_ROWS) {
+      logger.warn({ requestId, count: payments.length }, "payments exceeds MAX_UPLOAD_ROWS");
       return NextResponse.json(
         { error: `Batch exceeds the maximum of ${MAX_UPLOAD_ROWS} payments per upload.` },
         { status: 400 },
@@ -181,6 +211,7 @@ export async function POST(request: NextRequest) {
       const errors = Array.from(validation.errors.entries())
         .map(([idx, err]) => `Row ${idx}: ${err}`)
         .slice(0, 5);
+      logger.warn({ requestId, validationErrors: errors }, "Invalid payment instructions validation failure");
       return NextResponse.json(
         { error: `Invalid payment instructions: ${errors.join("; ")}` },
         { status: 400 },
@@ -205,23 +236,26 @@ export async function POST(request: NextRequest) {
     });
 
     if (outcome.replayed) {
+      logger.info({ requestId, jobId: outcome.jobId, publicKey, network, replayed: true }, "Batch submit job replayed (server-signed mode)");
       return setRateLimitHeaders(safeJsonResponse(outcome.responseBody, { status: 202 }), rate);
     }
 
     // Fire-and-forget: start background processing without awaiting
-    void processJobInBackground(outcome.jobId, payments, network, secretKey);
+    void processJobInBackground(outcome.jobId, payments, network, secretKey, undefined, requestId || undefined);
 
+    logger.info({ requestId, jobId: outcome.jobId, publicKey, network, replayed: false }, "Batch submit job queued and background worker triggered (server-signed mode)");
     // Return 202 Accepted with the job ID for polling
     return setRateLimitHeaders(safeJsonResponse(outcome.responseBody, { status: 202 }), rate);
   } catch (error) {
     if (error instanceof IdempotencyConflictError) {
+      logger.warn({ requestId }, `Idempotency conflict: ${error.message}`);
       return setRateLimitHeaders(safeJsonResponse(
         { error: error.message },
         { status: 409 },
       ), rate);
     }
 
-    console.error("Batch submission error:", error);
+    logger.error({ requestId }, "Batch submission error", error);
     return setRateLimitHeaders(safeJsonResponse(
       {
         error: error instanceof Error ? error.message : "Internal server error",

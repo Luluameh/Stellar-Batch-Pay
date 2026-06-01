@@ -98,7 +98,8 @@ function getDb(): Database.Database {
       result           TEXT,
       error            TEXT,
       createdAt        TEXT NOT NULL,
-      updatedAt        TEXT NOT NULL
+      updatedAt        TEXT NOT NULL,
+      version          INTEGER NOT NULL DEFAULT 1
     );
 
     -- Index for history queries ordered by creation time
@@ -119,6 +120,9 @@ function getDb(): Database.Database {
   const columns = _db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === "publicKey")) {
     _db.exec("ALTER TABLE jobs ADD COLUMN publicKey TEXT");
+  }
+  if (!columns.some((column) => column.name === "version")) {
+    _db.exec("ALTER TABLE jobs ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
   }
   _db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_publicKey_createdAt ON jobs (publicKey, createdAt DESC)");
 
@@ -142,6 +146,7 @@ interface JobRow {
   error: string | null;
   createdAt: string;
   updatedAt: string;
+  version: number;
 }
 
 function rowToJobState(row: JobRow): JobState {
@@ -165,8 +170,8 @@ function insertJob(db: Database.Database, args: BatchJobArgs & { jobId: string }
   const now = new Date().toISOString();
 
   db.prepare(`
-    INSERT INTO jobs (jobId, publicKey, status, totalBatches, completedBatches, payments, signedTransactions, network, createdAt, updatedAt)
-    VALUES (?, ?, 'queued', 0, 0, ?, ?, ?, ?, ?)
+    INSERT INTO jobs (jobId, publicKey, status, totalBatches, completedBatches, payments, signedTransactions, network, createdAt, updatedAt, version)
+    VALUES (?, ?, 'queued', 0, 0, ?, ?, ?, ?, ?, 1)
   `).run(
     args.jobId,
     args.publicKey,
@@ -281,6 +286,21 @@ export function getJob(jobId: string, publicKey?: string): JobState | undefined 
 }
 
 /**
+ * Atomic DB-side increment for completedBatches to prevent read-modify-write conflicts.
+ */
+export function incrementCompletedBatches(jobId: string): void {
+  const db = getDb();
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE jobs SET
+      completedBatches = completedBatches + 1,
+      updatedAt = ?,
+      version = version + 1
+    WHERE jobId = ?
+  `).run(now, jobId);
+}
+
+/**
  * Partially update a job's state.
  */
 export function updateJob(
@@ -288,33 +308,46 @@ export function updateJob(
   patch: Partial<Omit<JobState, "jobId" | "createdAt">>,
 ): void {
   const db = getDb();
-  const row = db.prepare("SELECT * FROM jobs WHERE jobId = ?").get(jobId) as
-    | JobRow
-    | undefined;
-  if (!row) return;
 
-  const now = new Date().toISOString();
+  const run = db.transaction(() => {
+    const row = db.prepare("SELECT * FROM jobs WHERE jobId = ?").get(jobId) as
+      | JobRow
+      | undefined;
+    if (!row) return;
 
-  db.prepare(
-    `
-    UPDATE jobs SET
-      status           = ?,
-      totalBatches     = ?,
-      completedBatches = ?,
-      result           = ?,
-      error            = ?,
-      updatedAt        = ?
-    WHERE jobId = ?
-  `,
-  ).run(
-    patch.status ?? row.status,
-    patch.totalBatches ?? row.totalBatches,
-    patch.completedBatches ?? row.completedBatches,
-    patch.result !== undefined ? JSON.stringify(patch.result) : row.result,
-    patch.error ?? row.error,
-    now,
-    jobId,
-  );
+    const now = new Date().toISOString();
+    const nextVersion = row.version + 1;
+
+    const result = db.prepare(
+      `
+      UPDATE jobs SET
+        status           = ?,
+        totalBatches     = ?,
+        completedBatches = ?,
+        result           = ?,
+        error            = ?,
+        updatedAt        = ?,
+        version          = ?
+      WHERE jobId = ? AND version = ?
+    `,
+    ).run(
+      patch.status ?? row.status,
+      patch.totalBatches ?? row.totalBatches,
+      patch.completedBatches ?? row.completedBatches,
+      patch.result !== undefined ? JSON.stringify(patch.result) : row.result,
+      patch.error ?? row.error,
+      now,
+      nextVersion,
+      jobId,
+      row.version,
+    );
+
+    if (result.changes === 0) {
+      throw new Error(`Concurrent modification error: job ${jobId} was updated by another process.`);
+    }
+  });
+
+  run();
 }
 
 export interface JobQueryFilters {

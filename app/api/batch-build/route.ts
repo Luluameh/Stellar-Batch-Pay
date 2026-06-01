@@ -111,7 +111,7 @@ export async function POST(request: NextRequest) {
     const balancesMap = buildBalancesMap(
       sourceAccount.balances as unknown as HorizonBalance[],
     );
-    const balanceCheck = validateBalances(payments, balancesMap);
+    const balanceCheck = validateBalances(payments, balancesMap, undefined, MAX_OPS);
     if (!balanceCheck.all_sufficient) {
       const insufficient = balanceCheck.checks
         .filter((c) => !c.sufficient)
@@ -199,6 +199,7 @@ export async function POST(request: NextRequest) {
       batchMeta,
       network,
       publicKey,
+      estimatedFees: ((dynamicFee * payments.length) / 10_000_000).toFixed(7) + " XLM",
     }), rate);
   } catch (error) {
     console.error("Batch build error:", error);

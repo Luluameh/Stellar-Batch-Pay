@@ -75,6 +75,18 @@ describe("Job Store — createJob", () => {
     expect(job?.publicKey).toBe(OWNER_PUBLIC_KEY);
   });
 
+  test("hydrates signedTransactions from the stored row", () => {
+    const signedTransactions = ["AAAA", "BBBB"];
+    const jobId = createJob(
+      samplePayments,
+      "testnet",
+      OWNER_PUBLIC_KEY,
+      signedTransactions,
+    );
+    const job = getJob(jobId);
+    expect(job?.signedTransactions).toEqual(signedTransactions);
+  });
+
   test("sets createdAt and updatedAt as ISO strings", () => {
     const jobId = createJob(samplePayments, "testnet", OWNER_PUBLIC_KEY);
     const job = getJob(jobId);

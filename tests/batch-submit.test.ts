@@ -3,16 +3,68 @@
  */
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
-
-process.env.JOB_STORE_PATH = ":memory:";
+import { Keypair } from "stellar-sdk";
 
 const { mockProcessJobInBackground } = vi.hoisted(() => ({
   mockProcessJobInBackground: vi.fn(),
 }));
 
+const { mockCreateIdempotentJob } = vi.hoisted(() => ({
+  mockCreateIdempotentJob: vi.fn(),
+}));
+
 vi.mock("@/lib/stellar/batch-worker", () => ({
   processJobInBackground: mockProcessJobInBackground,
 }));
+
+vi.mock("@/lib/job-store", async () => {
+  class MockIdempotencyConflictError extends Error {
+    constructor() {
+      super("Idempotency key already exists for a different request body");
+      this.name = "IdempotencyConflictError";
+    }
+  }
+
+  const entries = new Map<string, { requestHash: string; jobId: string; responseBody: unknown }>();
+
+  mockCreateIdempotentJob.mockImplementation((args: {
+    idempotencyKey: string;
+    requestHash: string;
+    buildResponseBody: (jobId: string) => unknown;
+  }) => {
+    const existing = entries.get(args.idempotencyKey);
+    if (existing) {
+      if (existing.requestHash !== args.requestHash) {
+        throw new MockIdempotencyConflictError();
+      }
+
+      return {
+        jobId: existing.jobId,
+        responseBody: existing.responseBody,
+        replayed: true,
+      };
+    }
+
+    const jobId = `job-${entries.size + 1}`;
+    const responseBody = args.buildResponseBody(jobId);
+    entries.set(args.idempotencyKey, {
+      requestHash: args.requestHash,
+      jobId,
+      responseBody,
+    });
+
+    return {
+      jobId,
+      responseBody,
+      replayed: false,
+    };
+  });
+
+  return {
+    createIdempotentJob: mockCreateIdempotentJob,
+    IdempotencyConflictError: MockIdempotencyConflictError,
+  };
+});
 
 vi.mock("@/lib/api-rate-limit", () => ({
   applyRateLimit: vi.fn(() => ({ blocked: false, response: undefined })),
@@ -21,7 +73,10 @@ vi.mock("@/lib/api-rate-limit", () => ({
 
 import { POST } from "@/app/api/batch-submit/route";
 
-const OWNER_PUBLIC_KEY = "GDQERHRWJYV7JHRP5V7DWJVI6Y5ABZP3YRH7DKYJRBEGJQKE6IQEOSY2";
+const OWNER_KEYPAIR = Keypair.random();
+const OWNER_PUBLIC_KEY = OWNER_KEYPAIR.publicKey();
+const SERVER_KEYPAIR = Keypair.random();
+const OTHER_PUBLIC_KEY = Keypair.random().publicKey();
 
 const baseBody = {
   network: "testnet" as const,
@@ -31,6 +86,9 @@ const baseBody = {
 
 beforeEach(() => {
   mockProcessJobInBackground.mockClear();
+  mockCreateIdempotentJob.mockClear();
+  delete process.env.ALLOW_SERVER_SIGNING;
+  delete process.env.STELLAR_SECRET_KEY;
 });
 
 function makeRequest(body: object, idempotencyKey: string) {
@@ -58,6 +116,35 @@ describe("POST /api/batch-submit idempotency", () => {
     expect(secondResponse.status).toBe(202);
     expect(firstJson.jobId).toBe(secondJson.jobId);
     expect(mockProcessJobInBackground).toHaveBeenCalledTimes(1);
+  });
+
+  test("rejects server signing when the configured secret does not match the request public key", async () => {
+    process.env.ALLOW_SERVER_SIGNING = "true";
+    process.env.STELLAR_SECRET_KEY = SERVER_KEYPAIR.secret();
+
+    const response = await POST(
+      makeRequest(
+        {
+          network: "testnet",
+          publicKey: OTHER_PUBLIC_KEY,
+          payments: [
+            {
+              address: OWNER_PUBLIC_KEY,
+              amount: "1",
+              asset: "XLM",
+            },
+          ],
+          idempotencyKey: "mismatch-key",
+        },
+        "mismatch-key",
+      ) as never,
+    );
+
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json.error).toMatch(/publicKey/i);
+    expect(mockProcessJobInBackground).toHaveBeenCalledTimes(0);
   });
 
   test("rejects a conflicting body that reuses the same key", async () => {
