@@ -187,3 +187,70 @@ describe('StellarService.submitBatch — asset parsing (#319)', () => {
     expect(incrementSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('StellarService.submitBatch — validation failures are not marked success (#389)', () => {
+  beforeEach(() => {
+    mockLoadAccount.mockClear();
+    mockSubmitTransaction.mockClear();
+    mockFetchBaseFee.mockClear();
+    mockLoadAccount.mockResolvedValue(new Account(SOURCE_KEYPAIR.publicKey(), '1'));
+    mockSubmitTransaction.mockResolvedValue({ hash: 'mock-tx-hash-389' });
+  });
+
+  test('an invalid row sharing a batch with a valid row stays failed after the tx lands', async () => {
+    const { StellarService } = await import('../lib/stellar/server');
+
+    const service = new StellarService({
+      secretKey: SOURCE_KEYPAIR.secret(),
+      network: 'testnet',
+      maxOperationsPerTransaction: 100,
+    });
+
+    const result = await service.submitBatch([
+      { address: RECIPIENT_1, amount: '10.0000000', asset: 'XLM' }, // valid
+      { address: 'not-a-valid-stellar-address', amount: '5.0000000', asset: 'XLM' }, // invalid
+    ]);
+
+    expect(mockSubmitTransaction).toHaveBeenCalledTimes(1);
+
+    // Only the valid payment should have been included in the envelope.
+    const submittedTx = mockSubmitTransaction.mock.calls[0][0];
+    expect(submittedTx.operations).toHaveLength(1);
+
+    expect(result.summary.successful).toBe(1);
+    expect(result.summary.failed).toBe(1);
+
+    const valid = result.results.find((r) => r.recipient === RECIPIENT_1);
+    const invalid = result.results.find(
+      (r) => r.recipient === 'not-a-valid-stellar-address',
+    );
+
+    expect(valid?.status).toBe('success');
+    expect(valid?.transactionHash).toBe('mock-tx-hash-389');
+
+    // The row that never made it into the envelope must NOT be flipped to success.
+    expect(invalid?.status).toBe('failed');
+    expect(invalid?.transactionHash).toBeUndefined();
+    expect(invalid?.error).toBeTruthy();
+  });
+
+  test('a batch where every row is invalid is never submitted', async () => {
+    const { StellarService } = await import('../lib/stellar/server');
+
+    const service = new StellarService({
+      secretKey: SOURCE_KEYPAIR.secret(),
+      network: 'testnet',
+      maxOperationsPerTransaction: 100,
+    });
+
+    const result = await service.submitBatch([
+      { address: 'bad-address-1', amount: '1.0000000', asset: 'XLM' },
+      { address: 'bad-address-2', amount: '2.0000000', asset: 'XLM' },
+    ]);
+
+    expect(mockSubmitTransaction).not.toHaveBeenCalled();
+    expect(result.summary.successful).toBe(0);
+    expect(result.summary.failed).toBe(2);
+    expect(result.results.every((r) => r.status === 'failed')).toBe(true);
+  });
+});

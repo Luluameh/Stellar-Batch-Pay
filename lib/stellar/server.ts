@@ -80,6 +80,11 @@ export class StellarService {
       let totalAmountBig = new Big(0);
 
       for (const batch of batches) {
+        // Indices into `results` of placeholders for operations actually added
+        // to this transaction. Validation/asset-parse failures are pushed to
+        // `results` too but are NOT added to the builder, so they must be
+        // excluded from the success/error updates below (#389).
+        const addedResultIndices: number[] = [];
         try {
           // Use user-provided memo from the first payment that has one,
           // otherwise fall back to the system-generated tracking memo.
@@ -156,6 +161,13 @@ export class StellarService {
               transactionHash: undefined,
               rowIndex: payment.rowIndex,
             });
+            addedResultIndices.push(results.length - 1);
+          }
+
+          // Every payment in this batch was invalid — nothing to submit.
+          // (TransactionBuilder.build() throws with zero operations.)
+          if (addedResultIndices.length === 0) {
+            continue;
           }
 
           // Build, sign, and submit transaction
@@ -166,16 +178,12 @@ export class StellarService {
 
           txCount++;
 
-          // Update successful results
-          for (
-            let i = results.length - batch.payments.length;
-            i < results.length;
-            i++
-          ) {
-            if (results[i].status === "failed") {
-              results[i].status = "success";
-              results[i].transactionHash = result.hash;
-            }
+          // Mark only the operations that were actually included in this
+          // transaction as successful. Validation failures keep their own
+          // status/error and must never be flipped to success (#389).
+          for (const i of addedResultIndices) {
+            results[i].status = "success";
+            results[i].transactionHash = result.hash;
           }
         } catch (error) {
           // Mark batch results as failed if transaction fails
@@ -183,11 +191,12 @@ export class StellarService {
             sourceAccount = await this.server.loadAccount(this.keypair.publicKey());
           }
 
-          for (const result of results) {
-            if (result.status === "failed") {
-              result.error =
-                error instanceof Error ? error.message : "Unknown error";
-            }
+          // Only annotate the operations that belonged to this failed
+          // transaction; rows that failed validation already carry their
+          // own error message.
+          for (const i of addedResultIndices) {
+            results[i].error =
+              error instanceof Error ? error.message : "Unknown error";
           }
         }
       }
