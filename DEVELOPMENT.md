@@ -11,7 +11,7 @@ The project follows a clean layered architecture with clear separation of concer
 ```
 ┌─────────────────────────────────────────────────────────┐
 │           UI Layer (Web & CLI)                          │
-│  (pages, components, cli/index.ts)                      │
+│  (pages, components, cli/index.mjs)                     │
 └─────────────────────────────────────────────────────────┘
                         ↓
 ┌─────────────────────────────────────────────────────────┐
@@ -113,6 +113,8 @@ If you need special handling for a specific asset:
 4. Add tests in `tests/`
 
 > **Important — server-side signing:** `StellarService` in `server.ts` (used by `/api/batch-submit` with `STELLAR_SECRET_KEY`) builds payment operations by calling `parseAsset` from `lib/stellar/utils.ts`. This shared parser handles `"XLM"`, `"native"`, and `"CODE:ISSUER"` strings. Do **not** introduce a local `parseAsset` in `server.ts`; doing so will break issued-asset batches (USDC, etc.) on the server-submit path.
+
+> **Local server-signing tests:** To test the `/api/batch-submit` or `/api/batch-retry` server-signing path locally, set `ALLOW_SERVER_SIGNING=true` alongside `STELLAR_SECRET_KEY`. Without this flag the routes return 403. The test suite (`tests/batch-submit.test.ts`) sets this flag automatically. See DEPLOYMENT.md for full security guidance before enabling in any deployed environment.
 
 ### Adding Rate Limiting
 
@@ -273,8 +275,15 @@ const result = await service.submitBatch(payments);
 
 1. **CLI Testing**:
    ```bash
-   STELLAR_SECRET_KEY="..." node cli/index.ts \
-     --input examples/payments.json \
+   # The canonical CLI entry point is cli/index.mjs (the package.json bin target).
+   # Use `bun run cli` or the global `stellar-batch-pay` bin:
+   STELLAR_SECRET_KEY="..." bun run cli submit \
+     examples/payments.json \
+     --network testnet
+
+   # Alternatively invoke the bin directly:
+   STELLAR_SECRET_KEY="..." node cli/index.mjs submit \
+     examples/payments.json \
      --network testnet
    ```
 

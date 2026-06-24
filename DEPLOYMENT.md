@@ -26,6 +26,40 @@ export LOG_LEVEL="info"
 export NODE_ENV="production"
 ```
 
+### `ALLOW_SERVER_SIGNING` — Server-Side Transaction Signing (#596)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ALLOW_SERVER_SIGNING` | `false` (unset) | Allow the server to sign and submit Stellar transactions using `STELLAR_SECRET_KEY` |
+
+**Default behaviour (unset or `"false"`):** The API routes `/api/batch-submit` and `/api/batch-retry` reject server-signing requests with HTTP 403. Users must sign via a connected client wallet (Freighter). This is the safe default for public deployments.
+
+**When `ALLOW_SERVER_SIGNING=true`:** The server signs transactions directly using `STELLAR_SECRET_KEY`. This is appropriate for:
+- Internal/trusted deployments where the server is not publicly accessible
+- Automated test pipelines (e.g. `tests/batch-submit.test.ts` sets this to `"true"`)
+- Staging environments running automated batch jobs
+
+**Security warnings:**
+- `ALLOW_SERVER_SIGNING=true` centralises key risk on the server. A compromised server can sign and submit arbitrary transactions.
+- Never enable on public-facing production endpoints without additional access controls (VPN, IP allowlist, or mutual TLS).
+- Requires `STELLAR_SECRET_KEY` to be set; the flag has no effect without it.
+- Audit all access logs when this flag is active.
+
+```bash
+# Staging / internal use only
+export ALLOW_SERVER_SIGNING=true
+export STELLAR_SECRET_KEY="S..."
+
+# Production (public) — leave unset; users sign via Freighter wallet
+# ALLOW_SERVER_SIGNING is intentionally absent
+```
+
+> **API error when disabled:** `POST /api/batch-submit` or `/api/batch-retry` without server signing enabled returns:
+> ```json
+> { "error": "Server-side signing is disabled. Use client-side signing with a connected wallet, or enable ALLOW_SERVER_SIGNING=true in server configuration." }
+> ```
+> See DEVELOPMENT.md for local test setup using this flag.
+
 ### Environment Variable Management
 
 **Do NOT commit `.env` files or secrets to version control.**
@@ -91,6 +125,43 @@ environments.
 
 No secret is written to disk, logs, or intermediate environment files in the
 `aws` or `github` backends.
+
+### Keeper Bot Pagination Configuration (#586)
+
+Recipients with more than `MAINTENANCE_LIMIT` vesting schedule entries require
+multiple keeper runs to receive full TTL coverage. The bot persists a per-recipient
+`nextMaintenanceIndex` cursor between runs so progress is never lost.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MAINTENANCE_LIMIT` | `10` | Number of schedule indices bumped per recipient per run |
+| `KEEPER_STATE_PATH` | `./data/keeper-state.json` | JSON file storing per-recipient pagination cursors |
+
+**How many runs to achieve full coverage:**
+
+If a recipient has `S` schedule entries and `MAINTENANCE_LIMIT=L`, full coverage
+requires `ceil(S / L)` consecutive keeper runs. After the final window is processed
+the cursor resets to 0 and the next run begins a fresh sweep.
+
+```
+Example: 50 schedule entries, MAINTENANCE_LIMIT=10 → 5 runs for full coverage.
+```
+
+**Tuning recommendations:**
+
+- Increase `MAINTENANCE_LIMIT` to cover larger recipients in fewer runs. Keep it
+  within Soroban transaction size limits (Stellar enforces a per-transaction instruction
+  cap; values above 50 may require fee increases or encounter simulation errors).
+- Set `KEEPER_STATE_PATH` to a persistent volume path in serverless/containerised
+  deployments so the cursor survives cold starts.
+- Keeper logs per-recipient progress: watch for `cursor reset to 0` lines to confirm
+  a full sweep completed.
+
+```bash
+# Example: tune for recipients with up to 25 entries, 3 runs for full coverage
+export MAINTENANCE_LIMIT=10
+export KEEPER_STATE_PATH=/mnt/data/keeper-state.json
+```
 
 ---
 

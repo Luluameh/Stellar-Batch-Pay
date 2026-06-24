@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // SkillSphere Batch-Pay CLI (#362).
 //
 // The README and `scripts/example-cli.sh` referenced this entry point
