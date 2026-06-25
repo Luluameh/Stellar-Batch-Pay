@@ -109,28 +109,26 @@ The primary CI workflow now runs both Vitest and TypeScript typechecking, so `np
 - Avoid mixing refactors with unrelated fixes
 - Do not force-push over someone else’s branch without coordination
 
-## Dependabot and Security Audit Triage
+## Security Audit Triage
 
-Dependabot is configured in `.github/dependabot.yml` to open weekly PRs for npm,
-Cargo (contracts), and GitHub Actions dependencies. A scheduled
-`.github/workflows/security-audit.yml` job also runs `npm audit` and
+A scheduled `.github/workflows/security-audit.yml` job runs `npm audit` and
 `cargo audit` weekly on `main` and on every PR.
 
-When a Dependabot PR or audit alert lands:
+When an audit failure or security advisory lands:
 
-1. Read the advisory linked in the PR/job summary and confirm the affected
+1. Read the advisory linked in the job summary and confirm the affected
    package is actually reachable from runtime code (vs. a transitive dev-only
    dep). High/critical runtime advisories are blockers.
-2. Run `bun install` then `npm test` and `bun run build` locally against the
-   PR branch — Dependabot PRs do not always exercise the full e2e suite.
-3. For Cargo bumps, also run `cargo test --manifest-path contracts/Cargo.toml`
-   to catch soroban-sdk breakage.
-4. Group-merge low-risk patch updates (radix-ui, types, eslint groups are
-   pre-grouped in `dependabot.yml`); review single PRs for `stellar`,
-   `next`, `better-sqlite3`, and `react` individually.
+2. Bump the offending package or pin a patched version in `package.json` or
+   `contracts/Cargo.toml`, then update the lockfile.
+3. Run `bun install` then `npm test` and `bun run build` locally. For Cargo
+   bumps, also run `cargo test --manifest-path contracts/Cargo.toml` to catch
+   soroban-sdk breakage.
+4. Review dependency bumps for `stellar`, `next`, `better-sqlite3`, and `react`
+   individually before merging.
 5. If the scheduled audit fails on `main`, the workflow opens an issue with
-   the `security-audit` label. Triage by bumping the offending package or
-   pinning a patched version, then close the issue.
+   the `security-audit` label. Triage using the steps above, then close the
+   issue.
 
 ## Reporting Issues
 

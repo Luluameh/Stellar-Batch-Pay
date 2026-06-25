@@ -57,7 +57,7 @@ jobs:
               `Triage steps:`,
               `1. Reproduce locally: \`bun install && npm audit --audit-level=high\`.`,
               `2. Identify the advisory and affected package.`,
-              `3. Bump via Dependabot PR or pin a patched version.`,
+              `3. Bump the offending package or pin a patched version.`,
             ].join("\n");
             const { data: existing } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
