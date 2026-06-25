@@ -2,7 +2,10 @@ version: '3.8'
 
 services:
   stellar:
-    image: stellar/quickstart:latest
+    # Pinned to a specific quickstart release so local Horizon/Soroban RPC
+    # behavior is reproducible across machines. See DEVELOPMENT.md
+    # ("Updating the stellar/quickstart pin") before bumping this tag.
+    image: stellar/quickstart:23.0.6-2304
     container_name: stellar-quickstart
     ports:
       - "8000:8000" # Horizon

@@ -92,6 +92,27 @@ environments.
 No secret is written to disk, logs, or intermediate environment files in the
 `aws` or `github` backends.
 
+### Keeper Bump Threshold (#332)
+
+The keeper uses an off-chain TTL pre-check that mirrors the on-chain
+`BUMP_THRESHOLD = 7 * DAY_IN_LEDGERS` constant in `contracts/batch-vesting/src/lib.rs`
+(where `DAY_IN_LEDGERS = 17280`, ~5 s per ledger).
+
+| Env var               | Default | Purpose                                                                                 |
+| --------------------- | ------- | --------------------------------------------------------------------------------------- |
+| `BUMP_THRESHOLD_DAYS` | `7`     | Recipients whose `VestingCount` TTL is more than this many days out are skipped.        |
+
+Tuning guidance:
+
+- Match `BUMP_THRESHOLD_DAYS` to the contract's `BUMP_THRESHOLD` in ledgers
+  (`days * 17280`). If you bump the contract constant, bump this env var the same way.
+- Raise the value to be more conservative (bump earlier, more fees, less risk of
+  expiry). Lower it to save fees in stable conditions.
+- The keeper reads the live-until ledger via Soroban RPC and prioritizes recipients
+  whose entries are closest to expiry. Recipients with healthy TTLs are skipped
+  entirely so we don't pay fees for what the contract's `extend_ttl` would treat
+  as a no-op.
+
 ---
 
 ## Smart Contract Deployment
@@ -172,44 +193,45 @@ vercel --prod
 
 ### Option 2: Docker Container
 
-For flexibility and multi-platform deployment:
+For flexibility and multi-platform deployment, use the committed
+[`Dockerfile`](../Dockerfile) at the repo root. It is a multi-stage build
+based on `node:22-alpine` that:
 
-```dockerfile
-FROM node:18-alpine
+- Installs `python3 / make / g++ / libc6-compat` so `better-sqlite3`'s
+  Alpine/musl rebuild fallback works on platforms without a prebuild.
+- Runs `next build` in a builder stage and prunes dev dependencies.
+- Drops privileges to a non-root `app` user in the runtime stage.
+- Exposes a `/app/data` volume for the SQLite job/batch store
+  (`lib/job-store.ts`, `lib/batch-persistence.ts`) so persistence survives
+  container restarts.
 
-WORKDIR /app
+The accompanying `.dockerignore` keeps `node_modules`, `.next`,
+`contracts/target`, `.env*`, and `data/` out of the build context.
 
-# Copy files
-COPY package*.json ./
-COPY . .
-
-# Install dependencies
-RUN npm ci --only=production
-
-# Build
-RUN npm run build
-
-# Set environment
-ENV NODE_ENV=production
-ENV STELLAR_SECRET_KEY=${STELLAR_SECRET_KEY}
-
-# Expose port
-EXPOSE 3000
-
-# Start
-CMD ["npm", "start"]
-```
-
-**Build and push:**
+**Build:**
 ```bash
 docker build -t stellar-bulk-pay:latest .
+```
+
+**Run locally:**
+```bash
+docker run --rm -p 3000:3000 \
+  -e NODE_ENV=production \
+  -e STELLAR_SECRET_KEY="$STELLAR_SECRET_KEY" \
+  -v "$(pwd)/data:/app/data" \
+  stellar-bulk-pay:latest
+```
+
+**Push:**
+```bash
 docker tag stellar-bulk-pay:latest myregistry/stellar-bulk-pay:latest
 docker push myregistry/stellar-bulk-pay:latest
 ```
 
 **Deploy to container service:**
-- AWS ECS
-- Google Cloud Run
+- AWS ECS — mount an EFS volume at `/app/data` if you need durable SQLite.
+- Google Cloud Run — pair with a managed database, or accept that
+  `data/` resets on each container instance.
 - Azure Container Instances
 
 ### Option 3: Traditional VPS

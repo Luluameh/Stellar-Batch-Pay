@@ -146,6 +146,40 @@ We use the [Stellar Quickstart](https://github.com/stellar/docker-stellar-quicks
    ```
    This starts a standalone network with Horizon on port `8000` and Soroban RPC on port `8001`.
 
+   The `stellar/quickstart` image is pinned to a specific release tag in
+   `docker-compose.yml` rather than `latest`, so a fresh clone produces the
+   same Horizon/Soroban RPC versions on every machine. Do not change the
+   pin without following the upgrade procedure below.
+
+### Updating the stellar/quickstart pin
+
+The `image:` line in `docker-compose.yml` references a versioned
+`stellar/quickstart` tag (e.g. `stellar/quickstart:23.0.6-2304`). Rotate
+it deliberately — a wrong pin can break contract deploys and friendbot.
+
+1. Pick a candidate tag from
+   [Docker Hub](https://hub.docker.com/r/stellar/quickstart/tags). Prefer
+   release-style tags (`<major>.<minor>.<patch>-<build>`) over rolling
+   ones like `latest`, `testing`, or `future`.
+2. (Optional, recommended) Resolve the tag to an immutable digest:
+   ```bash
+   docker pull stellar/quickstart:<tag>
+   docker inspect --format='{{index .RepoDigests 0}}' stellar/quickstart:<tag>
+   ```
+   Use the resulting `stellar/quickstart@sha256:...` form in
+   `docker-compose.yml` for full reproducibility.
+3. Smoke-test the new image locally:
+   ```bash
+   docker compose down -v
+   docker compose up -d
+   ./scripts/deploy-contract.sh local alice
+   cargo test --manifest-path contracts/Cargo.toml
+   ```
+4. Update any CI workflow that boots the quickstart image so it
+   references the same pin.
+5. Open a PR with the version bump and a one-line release note in the
+   description (link to the upstream changelog).
+
 2. **Configure Stellar CLI for Local**:
    ```bash
    stellar network add --rpc-url http://localhost:8001 --network-passphrase "Standalone Network ; February 2017" local

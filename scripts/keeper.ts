@@ -7,9 +7,18 @@ import {
   Account,
   Contract,
   Address,
-  nativeToScVal
+  nativeToScVal,
+  xdr,
 } from 'stellar-sdk';
 import { createSecretsProvider } from '../lib/secrets/index';
+import {
+  DEFAULT_BUMP_THRESHOLD_DAYS,
+  daysToLedgers,
+  ledgersToDays,
+  prioritizeRecipients,
+  readPositiveIntEnv,
+  type TtlSnapshot,
+} from '../lib/keeper/threshold';
 
 /**
  * CONFIGURATION
@@ -20,7 +29,15 @@ const CONTRACT_ID = process.env.CONTRACT_ID;
 const U32_MAX = 2 ** 32 - 1;
 const MAINTENANCE_START_INDEX = readU32Env('MAINTENANCE_START_INDEX', 0);
 const MAINTENANCE_LIMIT = readU32Env('MAINTENANCE_LIMIT', 10);
-const BUMP_THRESHOLD_DAYS = 7;
+// #332: BUMP_THRESHOLD_DAYS is the off-chain pre-flight that mirrors the
+// contract's BUMP_THRESHOLD (7 * DAY_IN_LEDGERS). Recipients whose TTL is
+// still beyond this window are skipped so we don't pay fees for no-op bumps.
+const BUMP_THRESHOLD_DAYS = readPositiveIntEnv(
+  process.env.BUMP_THRESHOLD_DAYS,
+  DEFAULT_BUMP_THRESHOLD_DAYS,
+  'BUMP_THRESHOLD_DAYS',
+);
+const BUMP_THRESHOLD_LEDGERS = daysToLedgers(BUMP_THRESHOLD_DAYS);
 const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL;
 const LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD || '50'); // XLM
 
@@ -88,6 +105,7 @@ async function main() {
   console.log('Starting Keeper Bot...');
   console.log(`Contract: ${CONTRACT_ID}`);
   console.log(`Keeper: ${keeperKeypair.publicKey()}`);
+  console.log(`Bump threshold: ${BUMP_THRESHOLD_DAYS} day(s) (${BUMP_THRESHOLD_LEDGERS} ledgers)`);
 
   try {
     // 1. Fetch active recipients from events (simplified: assume we have a list or indexer)
@@ -95,9 +113,35 @@ async function main() {
     // For this demonstration, we'll focus on the logic for a single recipient.
     const recipients = await fetchActiveRecipients();
 
-    for (const recipient of recipients) {
+    // 2. Read each recipient's VestingCount TTL and prioritize those inside
+    //    the threshold window. Recipients with healthy TTL are skipped so we
+    //    don't pay fees for bumps the contract would treat as no-ops.
+    const snapshots = await readRecipientTtls(server, recipients);
+    const currentLedger = await getCurrentLedger(server);
+    const prioritized = prioritizeRecipients(snapshots, currentLedger, BUMP_THRESHOLD_LEDGERS);
+
+    if (prioritized.length === 0) {
+      console.log(
+        `No recipients within ${BUMP_THRESHOLD_DAYS}-day TTL window — skipping per-recipient maintenance.`,
+      );
+    } else {
+      console.log(
+        `Prioritizing ${prioritized.length}/${snapshots.length} recipients within TTL window.`,
+      );
+    }
+
+    for (const snapshot of prioritized) {
+      const remainingDays =
+        snapshot.liveUntilLedger === null
+          ? null
+          : ledgersToDays(snapshot.liveUntilLedger - currentLedger);
+      console.log(
+        `[maintenance] ${snapshot.recipient} remaining=${
+          remainingDays === null ? 'unknown' : remainingDays.toFixed(2) + 'd'
+        }`,
+      );
       await maintainRecipient(
-        recipient,
+        snapshot.recipient,
         server,
         contract,
         keeperKeypair,
@@ -106,10 +150,10 @@ async function main() {
       );
     }
 
-    // 2. Maintain contract instance
+    // 3. Maintain contract instance
     await maintainInstance(server, contract, keeperKeypair);
 
-    // 3. Proactive balance check
+    // 4. Proactive balance check
     await checkBalance(server, keeperKeypair.publicKey());
 
     console.log('Keeper Bot finished successfully.');
@@ -118,6 +162,77 @@ async function main() {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error('Keeper execution failed:', errorMsg);
     await sendAlert(`Critical failure in Keeper Bot: ${errorMsg}`);
+  }
+}
+
+/**
+ * #332: Build the Soroban ledger key for `DataKey::VestingCount(recipient)`.
+ *
+ * Soroban contracttype enums serialize to a Vec whose first element is the
+ * variant name as a Symbol; subsequent elements are the variant fields.
+ * The keeper only needs to read the VestingCount entry per recipient — it's
+ * the cheapest single key whose TTL tracks the recipient's overall freshness.
+ */
+function buildVestingCountLedgerKey(contractId: string, recipient: string): xdr.LedgerKey {
+  const key = xdr.ScVal.scvVec([
+    xdr.ScVal.scvSymbol('VestingCount'),
+    new Address(recipient).toScVal(),
+  ]);
+  return xdr.LedgerKey.contractData(
+    new xdr.LedgerKeyContractData({
+      contract: new Address(contractId).toScAddress(),
+      key,
+      durability: xdr.ContractDataDurability.persistent(),
+    }),
+  );
+}
+
+async function getCurrentLedger(server: SorobanRpc.Server): Promise<number> {
+  const latest = await server.getLatestLedger();
+  return latest.sequence;
+}
+
+/**
+ * Reads the VestingCount TTL for each recipient. Missing entries return a
+ * null liveUntilLedger so the caller can treat them as urgent.
+ */
+async function readRecipientTtls(
+  server: SorobanRpc.Server,
+  recipients: string[],
+): Promise<TtlSnapshot[]> {
+  if (recipients.length === 0) return [];
+
+  const keys = recipients.map((r) => buildVestingCountLedgerKey(CONTRACT_ID!, r));
+
+  try {
+    const result = await server.getLedgerEntries(...keys);
+    const liveUntilByRecipient = new Map<string, number>();
+
+    for (const entry of result.entries ?? []) {
+      const liveUntil = (entry as { liveUntilLedgerSeq?: number }).liveUntilLedgerSeq;
+      if (typeof liveUntil !== 'number') continue;
+      const data = entry.val.contractData();
+      const keyVec = data.key().vec();
+      if (!keyVec || keyVec.length < 2) continue;
+      const addressScVal = keyVec[1];
+      const recipientAddr = Address.fromScVal(addressScVal).toString();
+      liveUntilByRecipient.set(recipientAddr, liveUntil);
+    }
+
+    return recipients.map<TtlSnapshot>((recipient) => ({
+      recipient,
+      liveUntilLedger: liveUntilByRecipient.has(recipient)
+        ? liveUntilByRecipient.get(recipient)!
+        : null,
+    }));
+  } catch (error) {
+    console.error('Failed to read recipient TTLs:', error);
+    // Fall back to treating every recipient as urgent so we don't silently
+    // skip required maintenance because of an RPC blip.
+    return recipients.map<TtlSnapshot>((recipient) => ({
+      recipient,
+      liveUntilLedger: null,
+    }));
   }
 }
 
