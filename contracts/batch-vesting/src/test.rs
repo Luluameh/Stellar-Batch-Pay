@@ -2819,6 +2819,127 @@ fn test_batch_revoke_different_recipients_any_order() {
     assert_eq!(results.get(1).unwrap(), true);
 }
 
+// ── #505: interleaved same-recipient index ordering ───────────────────────────
+
+/// Interleaved same-recipient requests that are not globally descending must be
+/// rejected, even when the out-of-order pair is separated by another recipient
+/// (so the old consecutive-only check would have let it through). Sequence for
+/// recipient R is 2, 0, 1 — the trailing 1 ascends past the previous 0. (#505)
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #18)")]
+fn test_batch_revoke_interleaved_indices() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender    = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let other     = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+    token_admin.mint(&sender, &400);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+
+    // 3 schedules for recipient R (indices 0, 1, 2)
+    for _ in 0..3 {
+        client.deposit(
+            &sender,
+            &Vec::from_array(&env, [token.address.clone()]),
+            &Vec::from_array(&env, [recipient.clone()]),
+            &Vec::from_array(&env, [100i128]),
+            &0,
+            &1000,
+            &0,
+            &0,
+            &Vec::from_array(&env, [String::from_str(&env, "")]),
+        );
+    }
+    // 1 schedule for the interleaving recipient
+    client.deposit(
+        &sender,
+        &Vec::from_array(&env, [token.address.clone()]),
+        &Vec::from_array(&env, [other.clone()]),
+        &Vec::from_array(&env, [100i128]),
+        &0,
+        &1000,
+        &0,
+        &0,
+        &Vec::from_array(&env, [String::from_str(&env, "")]),
+    );
+
+    // R sequence is 2, 0, 1 — globally NOT descending. The (R,0) and (R,1)
+    // entries are non-adjacent (separated by `other`), so a consecutive-only
+    // validator misses it. Must be rejected with InvalidInput (#18).
+    let requests = Vec::from_array(&env, [
+        RevokeRequest { recipient: recipient.clone(), index: 2 },
+        RevokeRequest { recipient: recipient.clone(), index: 0 },
+        RevokeRequest { recipient: other.clone(),     index: 0 },
+        RevokeRequest { recipient: recipient.clone(), index: 1 },
+    ]);
+
+    client.batch_revoke(&sender, &requests);
+}
+
+/// A genuinely descending per-recipient batch that happens to be interleaved
+/// with another recipient must still succeed. R sequence is 2, 1, 0. (#505)
+#[test]
+fn test_batch_revoke_interleaved_descending_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender    = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let other     = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+    token_admin.mint(&sender, &400);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+
+    for _ in 0..3 {
+        client.deposit(
+            &sender,
+            &Vec::from_array(&env, [token.address.clone()]),
+            &Vec::from_array(&env, [recipient.clone()]),
+            &Vec::from_array(&env, [100i128]),
+            &0,
+            &1000,
+            &0,
+            &0,
+            &Vec::from_array(&env, [String::from_str(&env, "")]),
+        );
+    }
+    client.deposit(
+        &sender,
+        &Vec::from_array(&env, [token.address.clone()]),
+        &Vec::from_array(&env, [other.clone()]),
+        &Vec::from_array(&env, [100i128]),
+        &0,
+        &1000,
+        &0,
+        &0,
+        &Vec::from_array(&env, [String::from_str(&env, "")]),
+    );
+
+    // R sequence 2, 1, 0 (descending) interleaved with `other` — must succeed.
+    let requests = Vec::from_array(&env, [
+        RevokeRequest { recipient: recipient.clone(), index: 2 },
+        RevokeRequest { recipient: other.clone(),     index: 0 },
+        RevokeRequest { recipient: recipient.clone(), index: 1 },
+        RevokeRequest { recipient: recipient.clone(), index: 0 },
+    ]);
+
+    let results = client.batch_revoke(&sender, &requests);
+    assert_eq!(results.get(0).unwrap(), true);
+    assert_eq!(results.get(1).unwrap(), true);
+    assert_eq!(results.get(2).unwrap(), true);
+    assert_eq!(results.get(3).unwrap(), true);
+}
+
 // ── #543: Fee asset whitelist tests ───────────────────────────────────────────
 
 /// Verify that set_fee_config no longer accepts fee_asset as a parameter.

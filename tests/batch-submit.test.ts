@@ -3,7 +3,15 @@
  */
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { Keypair } from "stellar-sdk";
+import {
+  Account,
+  Asset,
+  BASE_FEE,
+  Keypair,
+  Networks,
+  Operation,
+  TransactionBuilder,
+} from "stellar-sdk";
 
 const { mockProcessJobInBackground } = vi.hoisted(() => ({
   mockProcessJobInBackground: vi.fn(),
@@ -111,6 +119,25 @@ function setJobState(jobId: string, status: string, ageMs: number) {
     status,
     updatedAt: new Date(Date.now() - ageMs).toISOString(),
   });
+}
+
+function buildSignedXdr(sourceKeypair: Keypair): string {
+  const account = new Account(sourceKeypair.publicKey(), "0");
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: Networks.TESTNET,
+  })
+    .addOperation(
+      Operation.payment({
+        destination: Keypair.random().publicKey(),
+        asset: Asset.native(),
+        amount: "1",
+      }),
+    )
+    .setTimeout(300)
+    .build();
+  tx.sign(sourceKeypair);
+  return tx.toEnvelope().toXDR("base64");
 }
 
 function makeRequest(body: object, idempotencyKey: string) {
@@ -278,5 +305,76 @@ describe("POST /api/batch-submit stranded-worker replay (#502)", () => {
     const lastCall = mockProcessJobInBackground.mock.calls.at(-1)!;
     expect(lastCall[0]).toBe(firstJson.jobId);
     expect(lastCall[3]).toBe(SERVER_KEYPAIR.secret());
+  });
+});
+
+describe("POST /api/batch-submit pre-signed source verification (#504)", () => {
+  test("rejects an XDR whose source does not match publicKey with 403", async () => {
+    const attacker = Keypair.random();
+    const body = {
+      network: "testnet" as const,
+      publicKey: OWNER_PUBLIC_KEY,
+      signedTransactions: [buildSignedXdr(attacker)],
+    };
+
+    const response = await POST(makeRequest(body, "mismatched-source-key") as never);
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json.error).toMatch(/source account does not match/i);
+    // Rejected before the job is ever created or a worker started.
+    expect(mockCreateIdempotentJob).not.toHaveBeenCalled();
+    expect(mockProcessJobInBackground).not.toHaveBeenCalled();
+  });
+
+  test("rejects a fee-bump whose inner source is a different wallet with 403", async () => {
+    const attacker = Keypair.random();
+    const innerAccount = new Account(attacker.publicKey(), "0");
+    const innerTx = new TransactionBuilder(innerAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: Networks.TESTNET,
+    })
+      .addOperation(
+        Operation.payment({
+          destination: Keypair.random().publicKey(),
+          asset: Asset.native(),
+          amount: "1",
+        }),
+      )
+      .setTimeout(300)
+      .build();
+    innerTx.sign(attacker);
+
+    // OWNER pays the fee but the inner payment is the attacker's — must reject.
+    const feeBump = TransactionBuilder.buildFeeBumpTransaction(
+      OWNER_KEYPAIR,
+      (Number(BASE_FEE) * 2).toString(),
+      innerTx,
+      Networks.TESTNET,
+    );
+    feeBump.sign(OWNER_KEYPAIR);
+
+    const body = {
+      network: "testnet" as const,
+      publicKey: OWNER_PUBLIC_KEY,
+      signedTransactions: [feeBump.toEnvelope().toXDR("base64")],
+    };
+
+    const response = await POST(makeRequest(body, "feebump-mismatch-key") as never);
+    expect(response.status).toBe(403);
+    expect(mockProcessJobInBackground).not.toHaveBeenCalled();
+  });
+
+  test("accepts an XDR whose source matches publicKey and starts the worker", async () => {
+    const body = {
+      network: "testnet" as const,
+      publicKey: OWNER_PUBLIC_KEY,
+      signedTransactions: [buildSignedXdr(OWNER_KEYPAIR)],
+    };
+
+    const response = await POST(makeRequest(body, "matching-source-key") as never);
+
+    expect(response.status).toBe(202);
+    expect(mockProcessJobInBackground).toHaveBeenCalledTimes(1);
   });
 });

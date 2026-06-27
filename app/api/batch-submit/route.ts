@@ -31,6 +31,7 @@ import { MAX_UPLOAD_ROWS } from "@/lib/stellar/parser";
 import { safeJsonResponse } from "@/lib/safe-json";
 import { createIdempotentJob, IdempotencyConflictError, getJob } from "@/lib/job-store";
 import { processJobInBackground } from "@/lib/stellar/batch-worker";
+import { findSourceMismatch } from "@/lib/stellar/xdr-source";
 import type { JobState, PaymentInstruction } from "@/lib/stellar/types";
 import { applyRateLimit, setRateLimitHeaders } from "@/lib/api-rate-limit";
 import { canonicalizeIdempotencyPayload } from "@/lib/idempotency";
@@ -161,6 +162,25 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(
           { error: `Batch exceeds the maximum of ${MAX_UPLOAD_ROWS} transactions per upload.` },
           { status: 400 },
+        );
+      }
+
+      // #504: A pre-signed envelope must be signed by the wallet the job is
+      // attributed to. Reject any XDR whose source account (or fee-bump inner
+      // source) differs from publicKey before creating the job, so a client
+      // cannot attribute another wallet's signed transaction to publicKey.
+      const mismatch = findSourceMismatch(signedTransactions, publicKey, network);
+      if (mismatch) {
+        logger.warn(
+          { requestId, publicKey, index: mismatch.index, source: mismatch.source },
+          "Pre-signed transaction source does not match request publicKey",
+        );
+        return NextResponse.json(
+          {
+            error:
+              "Signed transaction source account does not match publicKey. Pre-signed batches must be signed by the authenticated wallet.",
+          },
+          { status: 403 },
         );
       }
 
