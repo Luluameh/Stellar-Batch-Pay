@@ -212,33 +212,41 @@ export function HistoryTable({
     <div className={className}>
       {/* Desktop View */}
       <div className="hidden md:block overflow-x-auto overflow-y-hidden">
-        <table className="w-full text-left min-w-[1000px]">
+        <table className="w-full text-left min-w-[1000px]" aria-label="Batch payment history">
           <thead>
             <tr className="text-xs font-semibold text-gray-500 border-b border-[#1F2937]">
-              <th className="pb-4 px-4 whitespace-nowrap">
+              <th className="pb-4 px-4 whitespace-nowrap" scope="col" aria-sort="none">
                 <div className="flex items-center gap-1">
                   Batch ID
                 </div>
               </th>
-              <th className="pb-4 px-4 whitespace-nowrap">
+              <th
+                className="pb-4 px-4 whitespace-nowrap"
+                scope="col"
+                aria-sort={sortColumn === "createdAt" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"}
+              >
                 <div className="flex items-center gap-1 cursor-pointer hover:text-gray-300" onClick={() => toggleSort("createdAt")}>
                   Date Submitted {sortColumn === "createdAt" ? (sortOrder === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />) : <ChevronDown className="h-3 w-3 opacity-30" />}
                 </div>
               </th>
-              <th className="pb-4 px-4 whitespace-nowrap">Network</th>
-              <th className="pb-4 px-4 whitespace-nowrap">Recipients</th>
-              <th className="pb-4 px-4 whitespace-nowrap">
+              <th className="pb-4 px-4 whitespace-nowrap" scope="col" aria-sort="none">Network</th>
+              <th className="pb-4 px-4 whitespace-nowrap" scope="col" aria-sort="none">Recipients</th>
+              <th className="pb-4 px-4 whitespace-nowrap" scope="col" aria-sort="none">
                 <div className="flex items-center gap-1">
                   Total Amount
                 </div>
               </th>
-              <th className="pb-4 px-4 whitespace-nowrap">Transactions</th>
-              <th className="pb-4 px-4 whitespace-nowrap">
+              <th className="pb-4 px-4 whitespace-nowrap" scope="col" aria-sort="none">Transactions</th>
+              <th
+                className="pb-4 px-4 whitespace-nowrap"
+                scope="col"
+                aria-sort={sortColumn === "status" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"}
+              >
                 <div className="flex items-center gap-1 cursor-pointer hover:text-gray-300" onClick={() => toggleSort("status")}>
                   Status {sortColumn === "status" ? (sortOrder === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />) : <ChevronDown className="h-3 w-3 opacity-30" />}
                 </div>
               </th>
-              <th className="pb-4 px-4 text-right whitespace-nowrap">Action</th>
+              <th className="pb-4 px-4 text-right whitespace-nowrap" scope="col">Action</th>
             </tr>
           </thead>
           <tbody className="text-sm">
