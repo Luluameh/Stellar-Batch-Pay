@@ -6,7 +6,18 @@
   "license": "ISC",
   "author": "",
   "type": "module",
-  "main": "index.js",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./package.json": "./package.json",
+    "./lib/*": "./lib/*"
+  },
+  "files": [
+    "cli",
+    "lib",
+    "index.ts",
+    "README.md"
+  ],
   "bin": {
     "stellar-batch-pay": "./cli/index.ts"
   },

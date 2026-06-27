@@ -11,7 +11,7 @@ The project follows a clean layered architecture with clear separation of concer
 ```
 ┌─────────────────────────────────────────────────────────┐
 │           UI Layer (Web & CLI)                          │
-│  (pages, components, cli/index.mjs)                     │
+│  (pages, components, cli/index.ts)                      │
 └─────────────────────────────────────────────────────────┘
                         ↓
 ┌─────────────────────────────────────────────────────────┐
@@ -317,16 +317,16 @@ const result = await service.submitBatch(payments);
 
 1. **CLI Testing**:
    ```bash
-   # The canonical CLI entry point is cli/index.mjs (the package.json bin target).
-   # Use `bun run cli` or the global `stellar-batch-pay` bin:
-   STELLAR_SECRET_KEY="..." bun run cli submit \
-     examples/payments.json \
-     --network testnet
+    # The canonical CLI entry point is cli/index.ts (the package.json bin target).
+    # Use `bun run cli` or the global `stellar-batch-pay` bin:
+    STELLAR_SECRET_KEY="..." bun run cli submit \
+      examples/payments.json \
+      --network testnet
 
-   # Alternatively invoke the bin directly:
-   STELLAR_SECRET_KEY="..." node cli/index.mjs submit \
-     examples/payments.json \
-     --network testnet
+    # Alternatively invoke the bin directly with bun:
+    STELLAR_SECRET_KEY="..." bun cli/index.ts submit \
+      examples/payments.json \
+      --network testnet
    ```
 
 2. **Web UI Testing**:
