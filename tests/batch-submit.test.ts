@@ -13,6 +13,11 @@ const { mockCreateIdempotentJob } = vi.hoisted(() => ({
   mockCreateIdempotentJob: vi.fn(),
 }));
 
+const { mockGetJob, jobStates } = vi.hoisted(() => ({
+  mockGetJob: vi.fn(),
+  jobStates: new Map<string, { status: string; updatedAt: string }>(),
+}));
+
 vi.mock("@/lib/stellar/batch-worker", () => ({
   processJobInBackground: mockProcessJobInBackground,
 }));
@@ -52,6 +57,8 @@ vi.mock("@/lib/job-store", async () => {
       jobId,
       responseBody,
     });
+    // Mirror the durable store: a fresh job starts "queued" with a current timestamp.
+    jobStates.set(jobId, { status: "queued", updatedAt: new Date().toISOString() });
 
     return {
       jobId,
@@ -60,8 +67,14 @@ vi.mock("@/lib/job-store", async () => {
     };
   });
 
+  mockGetJob.mockImplementation((jobId: string) => {
+    const state = jobStates.get(jobId);
+    return state ? { jobId, ...state } : undefined;
+  });
+
   return {
     createIdempotentJob: mockCreateIdempotentJob,
+    getJob: mockGetJob,
     IdempotencyConflictError: MockIdempotencyConflictError,
   };
 });
@@ -87,9 +100,18 @@ const baseBody = {
 beforeEach(() => {
   mockProcessJobInBackground.mockClear();
   mockCreateIdempotentJob.mockClear();
+  mockGetJob.mockClear();
   delete process.env.ALLOW_SERVER_SIGNING;
   delete process.env.STELLAR_SECRET_KEY;
 });
+
+/** Force a job into a given status with a chosen age (ms in the past). */
+function setJobState(jobId: string, status: string, ageMs: number) {
+  jobStates.set(jobId, {
+    status,
+    updatedAt: new Date(Date.now() - ageMs).toISOString(),
+  });
+}
 
 function makeRequest(body: object, idempotencyKey: string) {
   return new Request("http://localhost/api/batch-submit", {
@@ -163,5 +185,98 @@ describe("POST /api/batch-submit idempotency", () => {
     expect(response.status).toBe(409);
     expect(json.error).toMatch(/idempotency key/i);
     expect(mockProcessJobInBackground).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/batch-submit stranded-worker replay (#502)", () => {
+  test("restarts the worker when a replayed job is still queued and stale", async () => {
+    const idempotencyKey = "stranded-queued-key";
+
+    const firstResponse = await POST(makeRequest(baseBody, idempotencyKey) as never);
+    const firstJson = await firstResponse.json();
+    expect(firstJson.replayed).toBe(false);
+    expect(firstJson.workerRestarted).toBe(false);
+    expect(mockProcessJobInBackground).toHaveBeenCalledTimes(1);
+
+    // Simulate a server restart: the original fire-and-forget worker never ran,
+    // so the job is still "queued" with a stale updatedAt.
+    setJobState(firstJson.jobId, "queued", 60_000);
+
+    const secondResponse = await POST(makeRequest(baseBody, idempotencyKey) as never);
+    const secondJson = await secondResponse.json();
+
+    expect(secondResponse.status).toBe(202);
+    expect(secondJson.jobId).toBe(firstJson.jobId);
+    expect(secondJson.replayed).toBe(true);
+    expect(secondJson.workerRestarted).toBe(true);
+    expect(mockProcessJobInBackground).toHaveBeenCalledTimes(2);
+  });
+
+  test("restarts the worker for a replayed job stuck in stale processing", async () => {
+    const idempotencyKey = "stranded-processing-key";
+
+    const firstJson = await (await POST(makeRequest(baseBody, idempotencyKey) as never)).json();
+    setJobState(firstJson.jobId, "processing", 60_000);
+
+    const secondJson = await (await POST(makeRequest(baseBody, idempotencyKey) as never)).json();
+
+    expect(secondJson.replayed).toBe(true);
+    expect(secondJson.workerRestarted).toBe(true);
+    expect(mockProcessJobInBackground).toHaveBeenCalledTimes(2);
+  });
+
+  test("does not restart the worker for a completed replayed job (no double payout)", async () => {
+    const idempotencyKey = "completed-replay-key";
+
+    const firstJson = await (await POST(makeRequest(baseBody, idempotencyKey) as never)).json();
+    setJobState(firstJson.jobId, "completed", 60_000);
+
+    const secondJson = await (await POST(makeRequest(baseBody, idempotencyKey) as never)).json();
+
+    expect(secondJson.replayed).toBe(true);
+    expect(secondJson.workerRestarted).toBe(false);
+    // Only the original (fresh) submission started a worker.
+    expect(mockProcessJobInBackground).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not restart the worker while a fresh job is still actively processing", async () => {
+    const idempotencyKey = "fresh-processing-key";
+
+    const firstJson = await (await POST(makeRequest(baseBody, idempotencyKey) as never)).json();
+    // Recent update — the worker is presumed to be running; don't race it.
+    setJobState(firstJson.jobId, "processing", 1_000);
+
+    const secondJson = await (await POST(makeRequest(baseBody, idempotencyKey) as never)).json();
+
+    expect(secondJson.replayed).toBe(true);
+    expect(secondJson.workerRestarted).toBe(false);
+    expect(mockProcessJobInBackground).toHaveBeenCalledTimes(1);
+  });
+
+  test("restarts a stranded server-signed job on replay", async () => {
+    process.env.ALLOW_SERVER_SIGNING = "true";
+    process.env.STELLAR_SECRET_KEY = SERVER_KEYPAIR.secret();
+
+    const serverBody = {
+      network: "testnet" as const,
+      publicKey: SERVER_KEYPAIR.publicKey(),
+      payments: [{ address: OWNER_PUBLIC_KEY, amount: "1", asset: "XLM" }],
+    };
+    const idempotencyKey = "server-signed-stranded-key";
+
+    const firstJson = await (await POST(makeRequest(serverBody, idempotencyKey) as never)).json();
+    expect(mockProcessJobInBackground).toHaveBeenCalledTimes(1);
+
+    setJobState(firstJson.jobId, "queued", 60_000);
+
+    const secondJson = await (await POST(makeRequest(serverBody, idempotencyKey) as never)).json();
+
+    expect(secondJson.replayed).toBe(true);
+    expect(secondJson.workerRestarted).toBe(true);
+    expect(mockProcessJobInBackground).toHaveBeenCalledTimes(2);
+    // The restarted worker is invoked with the original payments + secret key.
+    const lastCall = mockProcessJobInBackground.mock.calls.at(-1)!;
+    expect(lastCall[0]).toBe(firstJson.jobId);
+    expect(lastCall[3]).toBe(SERVER_KEYPAIR.secret());
   });
 });
