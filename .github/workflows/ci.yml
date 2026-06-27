@@ -25,6 +25,12 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Verify package entry points exist
+        run: node scripts/verify-exports.js
+
+      - name: Validate package with npm pack
+        run: npm pack --dry-run
+
       - name: Run TypeScript typecheck
         run: bunx tsc --noEmit
         env:
