@@ -14,6 +14,7 @@ import { TransactionBuilder, Horizon, Networks } from "stellar-sdk";
 import { safeJsonResponse } from "@/lib/safe-json";
 import { applyRateLimit, setRateLimitHeaders } from "@/lib/api-rate-limit";
 import { horizonUrl } from "@/lib/stellar/network-config";
+import type { BatchJobNetwork } from "@/lib/stellar/types";
 import {
     classifySubmitError,
     isBadSequenceError,
@@ -23,7 +24,7 @@ import { getXdrSourceAccount } from "@/lib/stellar/xdr-source";
 
 interface RequestBody {
     signedXdr: string;
-    network: "testnet" | "mainnet";
+    network: BatchJobNetwork;
     // #504: Optional authenticated wallet. When provided, the transaction's
     // source account (or fee-bump inner source) must match it.
     publicKey?: string;

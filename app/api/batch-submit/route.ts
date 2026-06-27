@@ -27,19 +27,28 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { Keypair, StrKey } from "stellar-sdk";
 import { validatePaymentInstructions } from "@/lib/stellar";
+import { BatchMemoConflictError, createBatches } from "@/lib/stellar/batcher";
 import { MAX_UPLOAD_ROWS } from "@/lib/stellar/parser";
 import { safeJsonResponse } from "@/lib/safe-json";
 import { createIdempotentJob, IdempotencyConflictError, getJob } from "@/lib/job-store";
 import { processJobInBackground } from "@/lib/stellar/batch-worker";
+import { processJobInBackground } from "@/lib/stellar/batch-worker";
 import { findSourceMismatch } from "@/lib/stellar/xdr-source";
-import type { JobState, PaymentInstruction } from "@/lib/stellar/types";
+import type {
+  JobState,
+  PaymentInstruction,
+  BatchJobNetwork,
+} from "@/lib/stellar/types";
+import { applyRateLimit, setRateLimitHeaders } from "@/lib/api-rate-limit";
+import { canonicalizeIdempotencyPayload } from "@/lib/idempotency";
+import { logger } from "@/lib/logger";
 import { applyRateLimit, setRateLimitHeaders } from "@/lib/api-rate-limit";
 import { canonicalizeIdempotencyPayload } from "@/lib/idempotency";
 import { logger } from "@/lib/logger";
 
 interface RequestBody {
   payments?: PaymentInstruction[];
-  network: "testnet" | "mainnet";
+  network: BatchJobNetwork;
   publicKey: string;
   // #300: Support for client-side signed transactions (XDR format)
   signedTransactions?: string[];
@@ -59,6 +68,8 @@ type BatchSubmitAcceptedResponse = {
   workerRestarted?: boolean;
 };
 
+const MAX_OPS = 100;
+
 /**
  * A replayed job is "stranded" when it never reached a terminal state but its
  * worker is no longer making progress: either it is still "queued" (the
@@ -67,24 +78,30 @@ type BatchSubmitAcceptedResponse = {
  * mid-job). A short window keeps us from racing a worker that is actively
  * running, while still recovering genuinely stuck batches. (#502)
  */
-const REPLAY_STALE_MS = Number(process.env.IDEMPOTENCY_REPLAY_STALE_MS ?? 30_000);
+const REPLAY_STALE_MS = Number(
+  process.env.IDEMPOTENCY_REPLAY_STALE_MS ?? 30_000,
+);
 
 function isStrandedJob(job: JobState | undefined): boolean {
   if (!job) return false;
   if (job.status !== "queued" && job.status !== "processing") return false;
+
   const age = Date.now() - new Date(job.updatedAt).getTime();
   return Number.isFinite(age) && age >= REPLAY_STALE_MS;
 }
 
 /**
  * On idempotent replay, resume processing when the original job is stranded.
- * Returns true when the worker was re-invoked. The worker itself re-checks the
- * job status and exits early for terminal jobs, so this is safe even if the
- * status changes between the lookup here and the worker starting. (#502)
+ * Returns true when the worker was re-invoked.
  */
-function resumeStrandedReplay(jobId: string, restartWorker: () => void): boolean {
+function resumeStrandedReplay(
+  jobId: string,
+  restartWorker: () => void,
+): boolean {
   const job = getJob(jobId);
+
   if (!isStrandedJob(job)) return false;
+
   restartWorker();
   return true;
 }
@@ -286,13 +303,27 @@ export async function POST(request: NextRequest) {
     const validation = validatePaymentInstructions(payments);
     if (!validation.valid) {
       const errors = Array.from(validation.errors.entries())
-        .map(([idx, err]) => `Row ${idx}: ${err}`)
+        .map(([idx, err]) => `Row ${idx + 1}: ${err}`)
         .slice(0, 5);
       logger.warn({ requestId, validationErrors: errors }, "Invalid payment instructions validation failure");
       return NextResponse.json(
         { error: `Invalid payment instructions: ${errors.join("; ")}` },
         { status: 400 },
       );
+    }
+
+    try {
+      await createBatches(payments, MAX_OPS, { network });
+    } catch (error) {
+      if (error instanceof BatchMemoConflictError) {
+        logger.warn({ requestId, error: error.message }, "Batch memo validation failure");
+        return NextResponse.json(
+          { error: error.message },
+          { status: 400 },
+        );
+      }
+
+      throw error;
     }
 
     const outcome = createIdempotentJob<BatchSubmitAcceptedResponse>({

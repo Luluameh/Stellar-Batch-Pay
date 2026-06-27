@@ -33,6 +33,11 @@ import Big from "big.js";
 import { parseStellarAmount, formatStellarAmount, parseAsset, truncateMemoToBytes } from "./utils";
 export { parseAsset };
 
+const BAD_SEQUENCE_RETRY_LIMIT = Math.max(
+  1,
+  Number.parseInt(process.env.STELLAR_BAD_SEQUENCE_RETRY_LIMIT ?? "3", 10) || 3,
+);
+
 export class StellarService {
   private keypair: Keypair;
   private server: Horizon.Server;
@@ -264,12 +269,27 @@ export class StellarService {
       let totalAmountBig = new Big(0);
 
       for (const batch of batches) {
-        const outcome = await this.submitOneTransaction(
-          batch.payments,
-          sourceAccount,
-          fee,
-          txCount,
-        );
+const outcome = await this.submitOneTransaction(
+  batch.payments,
+  sourceAccount,
+  fee,
+  txCount,
+);
+
+results.push(...outcome.results);
+totalAmountBig = totalAmountBig.plus(outcome.totalAmount);
+
+if (outcome.submitted) {
+  txCount++;
+}
+
+// Reload the source account after a bad-sequence error so the next
+// batch builds against a fresh sequence number.
+if (outcome.needsReload) {
+  sourceAccount = await this.server.loadAccount(
+    this.keypair.publicKey(),
+  );
+}
 
         results.push(...outcome.results);
         totalAmountBig = totalAmountBig.plus(outcome.totalAmount);

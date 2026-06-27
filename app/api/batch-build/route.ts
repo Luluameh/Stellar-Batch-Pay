@@ -21,6 +21,7 @@ import { safeJsonResponse } from "@/lib/safe-json";
 import { horizonUrl } from "@/lib/stellar/network-config";
 
 import {
+  BatchMemoConflictError,
   createBatches,
   estimateBatchTransactionSize,
   STELLAR_TRANSACTION_SIZE_LIMIT_BYTES,
@@ -32,7 +33,11 @@ import {
   buildBalancesMap,
   validateBalances,
 } from "@/lib/stellar/validator";
-import type { PaymentInstruction, HorizonBalance } from "@/lib/stellar/types";
+import type {
+  PaymentInstruction,
+  HorizonBalance,
+  BatchJobNetwork,
+} from "@/lib/stellar/types";
 import { getRecommendedFee } from "@/lib/stellar/fee-service";
 import { MAX_UPLOAD_ROWS } from "@/lib/stellar/parser";
 import { truncateMemoToBytes } from "@/lib/stellar/utils";
@@ -40,7 +45,7 @@ import { applyRateLimit, setRateLimitHeaders } from "@/lib/api-rate-limit";
 
 interface RequestBody {
   payments: PaymentInstruction[];
-  network: "testnet" | "mainnet";
+  network: BatchJobNetwork;
   publicKey: string;
 }
 
@@ -232,6 +237,13 @@ export async function POST(request: NextRequest) {
     }), rate);
   } catch (error) {
     console.error("Batch build error:", error);
+    if (error instanceof BatchMemoConflictError) {
+      return setRateLimitHeaders(safeJsonResponse(
+        { error: error.message },
+        { status: 400 },
+      ), rate);
+    }
+
     return setRateLimitHeaders(safeJsonResponse(
       {
         error:
