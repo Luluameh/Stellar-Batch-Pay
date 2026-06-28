@@ -13,7 +13,7 @@ import {
   BalancesMap,
   BalanceValidationResult,
 } from "./types";
-import { parseStellarAmount } from "./utils";
+import { parseStellarAmount, formatAmount } from "./utils";
 
 function isValidPublicKey(value: string): boolean {
   return StrKey.isValidEd25519PublicKey(value);
@@ -372,11 +372,11 @@ export function validateBatchForSubmit(
       if (!check.sufficient) {
         if (check.asset_key === "XLM" && check.xlm_reserved) {
           errors.push(
-            `Insufficient balance for XLM. Required: ${check.required} (plus ${check.xlm_reserved.toFixed(7)} reserve), Available: ${check.available}`
+            `Insufficient balance for XLM. Required: ${formatAmount(check.required)} (plus ${check.xlm_reserved.toFixed(7)} reserve), Available: ${formatAmount(check.available)}`
           );
         } else {
           errors.push(
-            `Insufficient balance for ${check.asset_key}. Required: ${check.required}, Available: ${check.available}`
+            `Insufficient balance for ${check.asset_key}. Required: ${formatAmount(check.required)}, Available: ${formatAmount(check.available)}`
           );
         }
       }

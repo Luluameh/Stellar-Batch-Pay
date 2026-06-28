@@ -132,6 +132,8 @@ export function BatchFlowProvider({ children }: { children: React.ReactNode }) {
   const [estimatedFees, setEstimatedFees] = useState<string | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const pollErrorCountRef = useRef(0);
   const queryClient = useQueryClient();
   const { publicKey } = useWallet();
   const { pushBatchNotification } = useNotifications();
@@ -193,6 +195,11 @@ export function BatchFlowProvider({ children }: { children: React.ReactNode }) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    pollErrorCountRef.current = 0;
   }, []);
 
   const startPolling = useCallback(
@@ -200,12 +207,17 @@ export function BatchFlowProvider({ children }: { children: React.ReactNode }) {
       stopPolling();
       pollRef.current = setInterval(async () => {
         try {
+          abortControllerRef.current = new AbortController();
           const params = new URLSearchParams({ publicKey: ownerPublicKey });
           const res = await fetch(
             `/api/batch-status/${id}?${params.toString()}`,
+            { signal: abortControllerRef.current.signal }
           );
-          if (!res.ok) return;
+          if (!res.ok) {
+            throw new Error(`HTTP error ${res.status}`);
+          }
           const data = await res.json();
+          pollErrorCountRef.current = 0;
           setJobStatus(data.status);
           setCompletedBatches(data.completedBatches ?? 0);
           setTotalBatches(data.totalBatches ?? 0);
@@ -246,8 +258,13 @@ export function BatchFlowProvider({ children }: { children: React.ReactNode }) {
             });
             toast.error(data.error ?? "Batch processing failed");
           }
-        } catch {
-          // ignore transient fetch errors
+        } catch (error: any) {
+          if (error.name === "AbortError") return;
+          pollErrorCountRef.current += 1;
+          if (pollErrorCountRef.current >= 3) {
+            toast.error("Failed to check batch status repeatedly.");
+            stopPolling();
+          }
         }
       }, 2000);
     },

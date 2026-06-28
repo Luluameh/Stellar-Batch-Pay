@@ -618,3 +618,9 @@ Batch is too large for single transaction:
 4. **Multi-language SDKs**: Python, Go, Rust versions
 5. **Scheduler**: Automated batch submissions at intervals
 6. **Analytics Dashboard**: Track batch history and metrics
+
+## Migration Notes
+
+### Legacy Idempotency Helpers Removed
+
+The legacy idempotency helpers `getJobIdByIdempotencyKey` and `storeIdempotencyKey` have been removed from `lib/job-store.ts` as they queried the outdated SQLite column `key` instead of the modern schema layout which supports request hashing and expiration. All new paths use `createIdempotentJob`.
