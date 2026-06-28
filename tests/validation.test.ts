@@ -363,7 +363,7 @@ describe('validateBatchForSubmit', () => {
       'testnet',
     );
     expect(result.valid).toBe(false);
-    expect(result.errors.join(' ')).toContain('Insufficient balance for XLM');
+    expect(result.errors.join(' ')).toContain('Insufficient balance for XLM. Required: 100');
   });
 
   test('reports missing trustline warnings', () => {
