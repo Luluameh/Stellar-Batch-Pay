@@ -10,7 +10,7 @@
 import { StellarService } from "./server";
 import { updateJob, getJob, incrementCompletedBatches } from "../job-store";
 import { createBatches } from "./batcher";
-import { getXdrSourceAccount } from "./xdr-source";
+import { getXdrSourceAccount, operationCountOf } from "./xdr-source";
 import type {
   PaymentInstruction,
   BatchResult,
@@ -75,6 +75,9 @@ export async function processJobInBackground(
       const allResults: PaymentResult[] = [];
       let successCount = 0;
       let failCount = 0;
+      // #512: track the real number of recipient operations across all XDRs so
+      // totals reflect actual ops, not a "1 per transaction" heuristic.
+      let totalOps = 0;
       const paymentsPerBatch = payments.length > 0 ? Math.min(MAX_OPS, payments.length) : 0;
 
       for (let i = 0; i < xdrs.length; i++) {
@@ -83,12 +86,43 @@ export async function processJobInBackground(
           ? payments.slice(i * paymentsPerBatch, Math.min((i + 1) * paymentsPerBatch, payments.length))
           : [];
 
+        // Parse the envelope once. Done outside the submit try/catch so an
+        // unparseable XDR is attributed as a single failed op rather than
+        // crashing the loop.
+        let tx;
+        try {
+          tx = TransactionBuilder.fromXDR(xdr, network === 'testnet' ? Networks.TESTNET : Networks.PUBLIC);
+        } catch (error) {
+          logger.error({ requestId, jobId, batchIndex: i }, "Failed to parse pre-signed XDR", error);
+          failCount += 1;
+          totalOps += 1;
+          allResults.push({
+            recipient: `tx-${i}`,
+            amount: "0",
+            asset: "XLM",
+            status: "failed",
+            error: error instanceof Error ? error.message : "Unparseable transaction XDR",
+          });
+          incrementCompletedBatches(jobId);
+          continue;
+        }
+
+        // #512: Attribute success/failure to the actual recipient operations.
+        // When payment metadata is provided we count one result per payment;
+        // otherwise (pure XDR submit, #300) we count the envelope's operations
+        // so empty `payments` no longer collapses a multi-op tx to a single
+        // success. Fall back to the payment slice (or 1) when the op count can
+        // not be derived — e.g. older SDK shapes or mocked transactions.
+        const opCount = operationCountOf(tx) ?? (batchPayments.length || 1);
+        const recipientCount = batchPayments.length > 0 ? batchPayments.length : opCount;
+        totalOps += recipientCount;
+
         try {
           // #504: Defense-in-depth — never submit an envelope whose source
           // account differs from the wallet that owns this job. The submit
           // route enforces this up-front, but a job recovered from storage is
           // re-checked here. Skipped when the source can't be determined (older
-          // jobs without a publicKey, or unparseable XDR handled below).
+          // jobs without a publicKey, or unparseable XDR handled above).
           if (job.publicKey) {
             const source = getXdrSourceAccount(xdr, network);
             if (source !== undefined && source !== job.publicKey) {
@@ -98,12 +132,11 @@ export async function processJobInBackground(
             }
           }
 
-          const tx = TransactionBuilder.fromXDR(xdr, network === 'testnet' ? Networks.TESTNET : Networks.PUBLIC);
           const result = await server.submitTransaction(tx);
 
-          logger.info({ requestId, jobId, batchIndex: i, transactionHash: result.hash }, "Batch transaction submitted successfully (pre-signed mode)");
+          logger.info({ requestId, jobId, batchIndex: i, transactionHash: result.hash, operations: recipientCount }, "Batch transaction submitted successfully (pre-signed mode)");
 
-          successCount += batchPayments.length || 1;
+          successCount += recipientCount;
           if (batchPayments.length > 0) {
             for (const payment of batchPayments) {
               allResults.push({
@@ -115,17 +148,23 @@ export async function processJobInBackground(
               });
             }
           } else {
-            allResults.push({
-              recipient: `tx-${i}`,
-              amount: "0",
-              asset: "XLM",
-              status: "success",
-              transactionHash: result.hash,
-            });
+            for (let j = 0; j < recipientCount; j++) {
+              allResults.push({
+                recipient: `tx-${i}-op-${j}`,
+                amount: "0",
+                asset: "XLM",
+                status: "success",
+                transactionHash: result.hash,
+              });
+            }
           }
         } catch (error) {
           logger.error({ requestId, jobId, batchIndex: i }, "Batch transaction failed (pre-signed mode)", error);
 
+          // A Stellar transaction fails atomically, so every operation it
+          // carries is a failed recipient — keep failCount aligned with the
+          // op count, mirroring the success path.
+          failCount += recipientCount;
           if (batchPayments.length > 0) {
             for (const payment of batchPayments) {
               allResults.push({
@@ -135,17 +174,17 @@ export async function processJobInBackground(
                 status: "failed",
                 error: error instanceof Error ? error.message : "Unknown error",
               });
-              failCount++;
             }
           } else {
-            failCount++;
-            allResults.push({
-              recipient: `tx-${i}`,
-              amount: "0",
-              asset: "XLM",
-              status: "failed",
-              error: error instanceof Error ? error.message : "Unknown error",
-            });
+            for (let j = 0; j < recipientCount; j++) {
+              allResults.push({
+                recipient: `tx-${i}-op-${j}`,
+                amount: "0",
+                asset: "XLM",
+                status: "failed",
+                error: error instanceof Error ? error.message : "Unknown error",
+              });
+            }
           }
         }
 
@@ -155,7 +194,8 @@ export async function processJobInBackground(
       const finalStatus = successCount > 0 ? "completed" : "failed";
       const finalResult = {
         batchId: `batch-${Date.now()}`,
-        totalRecipients: payments.length > 0 ? payments.length : xdrs.length,
+        // #512: when no payment metadata is supplied, recipients = real ops.
+        totalRecipients: payments.length > 0 ? payments.length : totalOps,
         totalAmount: payments.length > 0
           ? formatStellarAmount(sumStellarAmounts(payments.map(p => p.amount)))
           : "0",
