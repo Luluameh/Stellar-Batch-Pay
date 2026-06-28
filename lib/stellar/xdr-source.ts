@@ -50,6 +50,29 @@ export function getXdrSourceAccount(
   return typeof source === "string" && source.length > 0 ? source : undefined;
 }
 
+/**
+ * Count the operations contained in a parsed transaction envelope. (#512)
+ *
+ * Pre-signed batches encode one Stellar operation per recipient, so the
+ * operation count is the source of truth for success/failure attribution —
+ * not the length of any out-of-band `payments` array, which can be empty
+ * (pure XDR submit, #300) or misaligned with the envelope's real ops.
+ *
+ * For a fee-bump transaction the inner transaction holds the operations.
+ * Returns `undefined` when the count cannot be determined (e.g. mocked test
+ * doubles without an `operations` array) so callers can fall back.
+ */
+export function operationCountOf(
+  tx: Transaction | FeeBumpTransaction,
+): number | undefined {
+  const ops =
+    tx instanceof FeeBumpTransaction
+      ? tx.innerTransaction.operations
+      : (tx as Transaction).operations;
+
+  return Array.isArray(ops) ? ops.length : undefined;
+}
+
 export interface SourceMismatch {
   index: number;
   source: string;

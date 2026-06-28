@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { Keypair } from "stellar-sdk";
+import { Keypair, TransactionBuilder } from "stellar-sdk";
 
 process.env.JOB_STORE_PATH = ":memory:";
 
@@ -41,6 +41,11 @@ describe("processJobInBackground — pre-signed (client-side) path", () => {
     mockSubmitTransaction.mockReset();
     mockTriggerWebhooksWithRetry.mockReset();
     mockTriggerWebhooksWithRetry.mockResolvedValue(undefined);
+    // Restore the default envelope shape so a per-test override (e.g. the
+    // multi-op #512 case) never leaks into later tests.
+    vi.mocked(TransactionBuilder.fromXDR).mockImplementation(
+      () => ({ sign: vi.fn() }) as unknown as ReturnType<typeof TransactionBuilder.fromXDR>,
+    );
   });
 
   test("marks a pre-signed job failed when every Horizon submit fails", async () => {
@@ -63,6 +68,38 @@ describe("processJobInBackground — pre-signed (client-side) path", () => {
     expect(job?.status).toBe("failed");
     expect(job?.result?.summary.failed).toBe(1);
     expect(job?.result?.summary.successful).toBe(0);
+  });
+
+  test("attributes success to actual XDR operations when payments is empty (#512)", async () => {
+    mockSubmitTransaction.mockResolvedValue({ hash: "multiop_hash" });
+
+    // A single pre-signed envelope carrying three recipient operations and no
+    // out-of-band payment metadata (pure XDR submit, #300).
+    const threeOpTx = { operations: [{}, {}, {}], sign: vi.fn() };
+    vi.mocked(TransactionBuilder.fromXDR).mockReturnValue(
+      threeOpTx as unknown as ReturnType<typeof TransactionBuilder.fromXDR>,
+    );
+
+    const { createJob, getJob } = await import("../lib/job-store");
+    const { processJobInBackground } = await import("../lib/stellar/batch-worker");
+
+    const owner = Keypair.random().publicKey();
+    const signedTransactions = ["MULTIOP"];
+
+    // Job created with no payments — the empty-payments path under test.
+    const jobId = createJob([], "testnet", owner, signedTransactions);
+
+    await processJobInBackground(jobId, [], "testnet", undefined, signedTransactions);
+
+    const job = getJob(jobId);
+
+    expect(job?.status).toBe("completed");
+    // successful must equal the op count (3), not 1-per-transaction.
+    expect(job?.result?.summary.successful).toBe(3);
+    expect(job?.result?.summary.failed).toBe(0);
+    // Totals and the results table stay internally consistent.
+    expect(job?.result?.totalRecipients).toBe(3);
+    expect(job?.result?.results).toHaveLength(3);
   });
 
   test("marks a pre-signed job completed when all Horizon submits succeed", async () => {
