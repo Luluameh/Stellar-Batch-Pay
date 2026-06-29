@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileUpload } from "@/components/file-upload";
-import { DashboardWalletEmpty } from "@/components/dashboard/dashboard-wallet-empty";
+
 import { MotionSafe } from "@/components/motion-safe";
 import { motionCssDuration, stepEnter } from "@/lib/motion-tokens";
 import { BatchDryRun } from "@/components/dashboard/BatchDryRun";
@@ -53,7 +53,7 @@ async function buildBatchSubmitIdempotencyKey(body: {
     .join("");
 }
 
-export default function NewBatchPaymentPage() {
+function NewBatchPaymentPageContent() {
   const [step, setStep] = useState(1);
   const [selectedNetwork, setSelectedNetwork] = useState<"testnet" | "mainnet">(
     "testnet",
