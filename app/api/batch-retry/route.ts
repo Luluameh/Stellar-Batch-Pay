@@ -25,9 +25,12 @@ function hashRequestBody(body: { jobId: string; publicKey: string }): string {
 
 export async function POST(request: NextRequest) {
     const requestId = request.headers.get("x-request-id");
+    // jobId must be declared in the outer scope so the catch block
+    // can reference it for logging (#515 scoping fix).
+    let jobId: string | undefined;
     try {
         const body = (await request.json()) as { jobId?: string; publicKey?: string };
-        const jobId = body.jobId;
+        jobId = body.jobId;
         const publicKey = body.publicKey;
 
         // Extract or derive idempotency key for duplicate retry protection (#550)
@@ -109,12 +112,16 @@ export async function POST(request: NextRequest) {
             );
         }
 
+        // #515: Pre-signed batches with preserved payment metadata can be
+        // retried just like server-signed batches. Only block retry when
+        // there are genuinely no stored payments.
         if (!job.payments || job.payments.length === 0) {
-            logger.warn({ requestId, jobId }, "Retry not available for pre-signed batches");
+            logger.warn({ requestId, jobId }, "Retry not available — no payment metadata preserved");
             return NextResponse.json(
                 {
                     error:
-                        "Retry is not available for pre-signed batches without preserved payment metadata.",
+                        "Retry is not available for this batch because no payment metadata was preserved. " +
+                        "Re-submit the original payments with signedTransactions to enable retry support.",
                 },
                 { status: 400 },
             );
