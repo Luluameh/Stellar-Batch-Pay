@@ -36,7 +36,6 @@ export async function POST(request: NextRequest) {
         // Extract or derive idempotency key for duplicate retry protection (#550)
         const idempotencyKey = request.headers.get("Idempotency-Key") 
             ?? createHash("sha256").update(`${jobId}-${publicKey}`).digest("hex");
-        console.log("[RETRY] jobId:", jobId, "| publicKey:", publicKey, "| header:", request.headers.get("Idempotency-Key"), "| idempotencyKey:", idempotencyKey, "| ALL_HEADERS:", JSON.stringify([...request.headers.entries()]));
 
         if (!jobId || typeof jobId !== "string") {
             logger.warn({ requestId }, "Missing jobId in retry request");
