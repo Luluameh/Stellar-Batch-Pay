@@ -399,6 +399,9 @@ A: Yes! In the same batch, you can send some people XLM, others USDC, others any
 **Q: Is this secure?**
 A: Your secret key never leaves your computer/browser. All processing happens locally or on your own server.
 
+**Q: Does BatchPay store uploaded recipient or payroll data in browser storage?**
+A: No. The new batch flow only keeps non-sensitive draft metadata, such as the current step and active job id, in session storage for crash recovery. Recipient addresses, payment amounts, validation results, and batch summaries are not persisted in browser storage and the draft metadata is cleared after successful submission or wallet disconnect.
+
 ---
 
 ## Webhook Integration

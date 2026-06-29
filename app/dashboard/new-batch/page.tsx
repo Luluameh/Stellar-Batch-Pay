@@ -40,6 +40,8 @@ import { toast } from "sonner";
 import { BatchErrorBoundary } from "@/components/BatchErrorBoundary";
 import { canonicalizeIdempotencyPayload } from "@/lib/idempotency";
 
+const NEW_BATCH_STATE_KEY = "new_batch_state";
+
 async function buildBatchSubmitIdempotencyKey(body: {
   payments?: PaymentInstruction[];
   network: "testnet" | "mainnet";
@@ -92,48 +94,66 @@ export default function NewBatchPaymentPage() {
   );
   const [entryMode, setEntryMode] = useState<"upload" | "manual">("upload");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hasLoadedSavedStateRef = useRef(false);
 
-  // Sync state to sessionStorage to prevent data loss on render crashes
+  // Store only non-sensitive flow metadata. Recipient addresses, amounts, and
+  // validation details must never be persisted in browser storage.
   useEffect(() => {
-    const stateToSave = {
-      step,
-      selectedNetwork,
-      validationResult,
-      summary,
-      manualPayments,
-      entryMode,
-    };
-    if (validationResult || manualPayments.length > 0) {
-      sessionStorage.setItem("new_batch_state", JSON.stringify(stateToSave));
+    if (!hasLoadedSavedStateRef.current) return;
+
+    if (result || jobStatus === "completed") {
+      sessionStorage.removeItem(NEW_BATCH_STATE_KEY);
+      return;
     }
+
+    const stateToSave = {
+      step: jobId ? step : 1,
+      selectedNetwork,
+      entryMode,
+      jobId,
+      jobStatus,
+    };
+
+    sessionStorage.setItem(NEW_BATCH_STATE_KEY, JSON.stringify(stateToSave));
   }, [
     step,
     selectedNetwork,
-    validationResult,
-    summary,
-    manualPayments,
     entryMode,
+    jobId,
+    jobStatus,
+    result,
   ]);
 
   // Restore state from sessionStorage
   const handleRestore = (saved: any) => {
-    if (saved.step) setStep(saved.step);
     if (saved.selectedNetwork) setSelectedNetwork(saved.selectedNetwork);
-    if (saved.validationResult) setValidationResult(saved.validationResult);
-    if (saved.summary) setSummary(saved.summary);
-    if (saved.manualPayments) setManualPayments(saved.manualPayments);
     if (saved.entryMode) setEntryMode(saved.entryMode);
+    if (saved.jobId) {
+      setJobId(saved.jobId);
+      setJobStatus(saved.jobStatus ?? "queued");
+      setStep(saved.step ?? 4);
+    } else {
+      setStep(1);
+      setValidationResult(null);
+      setSummary(null);
+      setManualPayments([]);
+    }
   };
 
   useEffect(() => {
-    const saved = sessionStorage.getItem("new_batch_state");
+    const saved = sessionStorage.getItem(NEW_BATCH_STATE_KEY);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
         handleRestore(parsed);
       } catch (e) {
         console.error("Failed to restore new_batch_state:", e);
+        sessionStorage.removeItem(NEW_BATCH_STATE_KEY);
+      } finally {
+        hasLoadedSavedStateRef.current = true;
       }
+    } else {
+      hasLoadedSavedStateRef.current = true;
     }
   }, []);
 
@@ -163,6 +183,7 @@ export default function NewBatchPaymentPage() {
             setResult(data.result ?? null);
             setIsSubmitting(false);
             setStep(4);
+            sessionStorage.removeItem(NEW_BATCH_STATE_KEY);
             toast.success("Batch submitted successfully");
           } else if (data.status === "failed") {
             stopPolling();
@@ -178,6 +199,15 @@ export default function NewBatchPaymentPage() {
   );
 
   useEffect(() => () => stopPolling(), [stopPolling]);
+
+  useEffect(() => {
+    if (!jobId || !publicKey || isSubmitting || result) return;
+    if (jobStatus === "completed" || jobStatus === "failed") return;
+
+    setIsSubmitting(true);
+    startPolling(jobId, publicKey);
+  }, [jobId, publicKey, isSubmitting, result, jobStatus, startPolling]);
+
   const [skippedIndices, setSkippedIndices] = useState<number[]>([]);
   const [convertedIndices, setConvertedIndices] = useState<number[]>([]);
   const [batchMeta, setBatchMeta] = useState<BatchMetaEntry[] | undefined>();
@@ -373,7 +403,7 @@ export default function NewBatchPaymentPage() {
       </div>
 
       <BatchErrorBoundary
-        storageKey="new_batch_state"
+        storageKey={NEW_BATCH_STATE_KEY}
         onRestore={handleRestore}
       >
         {/* Stepper */}
@@ -750,8 +780,11 @@ export default function NewBatchPaymentPage() {
                 <div className="pt-4">
                   <Button
                     onClick={() => {
-                      sessionStorage.removeItem("new_batch_state");
+                      sessionStorage.removeItem(NEW_BATCH_STATE_KEY);
                       setStep(1);
+                      setResult(null);
+                      setJobId(null);
+                      setJobStatus("queued");
                     }}
                     variant="outline"
                     className="border-slate-800 text-slate-300 hover:bg-slate-800"
